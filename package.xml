@@ -1,0 +1,45 @@
+<?xml version="1.0"?>
+<package>
+  <name>pd_loam</name>
+  <version>0.1.0</version>
+  <description>
+  Probability Distributions based LOAM algorithm
+  This method using odometry and mapping based on
+  Probability distributions of edge and planar points.
+  LOAM is described in the following paper:
+  J. Zhang and S. Singh. LOAM: Lidar Odometry and Mapping in Real-time.
+    Robotics: Science and Systems Conference (RSS). Berkeley, CA, July 2014
+  </description>
+
+  <maintainer email="kkw1125@konkuk.ac.kr">KKW</maintainer>
+
+  <license>BSD</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <build_depend>message_generation</build_depend>
+  <build_depend>geometry_msgs</build_depend>
+  <build_depend>nav_msgs</build_depend>
+  <build_depend>roscpp</build_depend>
+  <build_depend>rospy</build_depend>
+  <build_depend>std_msgs</build_depend>
+  <build_depend>rosbag</build_depend>
+  <build_depend>sensor_msgs</build_depend>
+  <build_depend>tf</build_depend>
+  <build_depend>image_transport</build_depend>
+
+  <run_depend>message_runtime</run_depend>
+  <run_depend>geometry_msgs</run_depend>
+  <run_depend>nav_msgs</run_depend>
+  <run_depend>sensor_msgs</run_depend>
+  <run_depend>roscpp</run_depend>
+  <run_depend>rospy</run_depend>
+  <run_depend>std_msgs</run_depend>
+  <run_depend>rosbag</run_depend>
+  <run_depend>tf</run_depend>
+  <run_depend>image_transport</run_depend>
+  <export>
+    <!-- Other tools can request additional information be placed here -->
+
+  </export>
+</package>
