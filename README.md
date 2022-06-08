@@ -3,6 +3,7 @@
 * Scan matching is performed using probability distributions of edge and planar points.
 * Loop detection for pose graph optimization is performed using scan-context.
 ![node_graph](https://user-images.githubusercontent.com/5857457/172543497-abd3893f-8ce0-4158-a4be-76f990031d54.png)
+![point and pd](https://user-images.githubusercontent.com/5857457/172545330-03ab225d-97e7-474c-8f97-ad6250bc9d87.png)
 ![ezgif com-gif-maker](https://user-images.githubusercontent.com/5857457/172544889-da00c369-3c58-44b2-85b2-8cd69a319f58.gif)
 # Requirements
 * Cmake
