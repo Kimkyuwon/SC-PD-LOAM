@@ -1,7 +1,9 @@
 # SC-PD-LOAM
 Probability Distribution based LOAM and Pose Graph Optimization using scan context
 # Requirements
+* Cmake
 * PCL-1.8
+* Eigen3
 * GTSAM
 * Ceres-solver
 * jsk-rviz-plugins (optional)
