@@ -1,5 +1,7 @@
 # What is SC-PD-LOAM?
-Probability Distribution based LOAM and Pose Graph Optimization using scan context
+* SC-PD-LOAM is Probability Distribution based LOAM and Pose Graph Optimization method.
+* Scan matching is performed using probability distributions of edge and planar points.
+* Loop detection for pose graph optimization is performed using scan-context.
 ![node_graph](https://user-images.githubusercontent.com/5857457/172543497-abd3893f-8ce0-4158-a4be-76f990031d54.png)
 # Requirements
 * Cmake
