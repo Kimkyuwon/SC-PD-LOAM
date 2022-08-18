@@ -87,6 +87,8 @@ pcl::PointCloud<PointType>::Ptr surfPointsCluster(new pcl::PointCloud<PointType>
 
 pcl::PointCloud<PointType>::Ptr laserCloudCornerLast(new pcl::PointCloud<PointType>());
 pcl::PointCloud<PointType>::Ptr laserCloudSurfLast(new pcl::PointCloud<PointType>());
+std::vector<Eigen::Matrix3d> cornerLastCov;
+std::vector<Eigen::Matrix3d> surfLastCov;
 
 pcl::PointCloud<PointType>::Ptr laserCloudFullRes(new pcl::PointCloud<PointType>());
 
@@ -103,8 +105,7 @@ double parameters[7] = {0, 0, 0, 0, 0, 0, 1};
 Eigen::Map<Eigen::Quaterniond> q_last_curr(parameters+3);
 Eigen::Map<Eigen::Vector3d> t_last_curr(parameters);
 
-Eigen::Quaterniond q_imu_incre;
-Eigen::Vector3d t_imu_incre;
+double matchingThres = 2;
 
 Eigen::Matrix4d increTF(Eigen::Matrix4d::Identity());
 
@@ -132,6 +133,7 @@ void TransformToStart(PointType const *const pi, PointType *const po)
     po->x = un_point.x();
     po->y = un_point.y();
     po->z = un_point.z();
+    po->intensity = pi->intensity;
     po->_PointXYZINormal::curvature = pi->_PointXYZINormal::curvature;
     po->_PointXYZINormal::normal_y = pi->_PointXYZINormal::normal_y;
     po->_PointXYZINormal::normal_z = pi->_PointXYZINormal::normal_z;
@@ -151,11 +153,101 @@ void TransformToEnd(PointType const *const pi, PointType *const po)
     po->x = point_end.x();
     po->y = point_end.y();
     po->z = point_end.z();
+    po->z = pi->intensity;
 
     //Remove distortion time info
     po->_PointXYZINormal::curvature = int(pi->_PointXYZINormal::curvature);
     po->_PointXYZINormal::normal_y = pi->_PointXYZINormal::normal_y;
     po->_PointXYZINormal::normal_z = pi->_PointXYZINormal::normal_z;
+}
+
+void getCornerProbabilityDistributions(pcl::PointCloud<PointType>::Ptr cornerTemp)
+{
+    int cnt = 0;
+    pcl::PointCloud<PointType> tempPC;
+    for (size_t k = 0; k < cornerTemp->points.size(); k++)
+    {
+        if (cornerTemp->points[k]._PointXYZINormal::normal_y == cnt)
+        {
+            tempPC.push_back(cornerTemp->points[k]);
+            if (k == cornerTemp->points.size()-1)
+            {
+                Eigen::Vector3d mean = getMean(tempPC);
+                Eigen::Matrix3d cov = getCovariance(tempPC);
+
+                PointType tempPoint;
+                tempPoint.x = mean(0);
+                tempPoint.y = mean(1);
+                tempPoint.z = mean(2);
+                laserCloudCornerLast->push_back(tempPoint);
+                cornerLastCov.push_back(cov);
+
+                tempPC.clear();
+                cnt++;
+            }
+        }
+        else
+        {
+            Eigen::Vector3d mean = getMean(tempPC);
+            Eigen::Matrix3d cov = getCovariance(tempPC);
+
+            PointType tempPoint;
+            tempPoint.x = mean(0);
+            tempPoint.y = mean(1);
+            tempPoint.z = mean(2);
+            laserCloudCornerLast->push_back(tempPoint);
+            cornerLastCov.push_back(cov);
+
+
+            tempPC.clear();
+            tempPC.push_back(cornerTemp->points[k]);
+            cnt++;
+        }
+    }
+}
+
+void getSurfProbabilityDistributions(pcl::PointCloud<PointType>::Ptr surfTemp)
+{
+    int cnt = 0;
+    pcl::PointCloud<PointType> tempPC;
+    for (size_t k = 0; k < surfTemp->points.size(); k++)
+    {
+        if (surfTemp->points[k]._PointXYZINormal::normal_y == cnt)
+        {
+            tempPC.push_back(surfTemp->points[k]);
+
+            if (k == surfTemp->points.size()-1)
+            {
+                Eigen::Vector3d mean = getMean(tempPC);
+                Eigen::Matrix3d cov = getCovariance(tempPC);
+
+                PointType tempPoint;
+                tempPoint.x = mean(0);
+                tempPoint.y = mean(1);
+                tempPoint.z = mean(2);
+                laserCloudSurfLast->push_back(tempPoint);
+                surfLastCov.push_back(cov);
+                tempPC.clear();
+                cnt++;
+            }
+        }
+        else
+        {
+            Eigen::Vector3d mean = getMean(tempPC);
+            Eigen::Matrix3d cov = getCovariance(tempPC);
+
+            PointType tempPoint;
+            tempPoint.x = mean(0);
+            tempPoint.y = mean(1);
+            tempPoint.z = mean(2);
+            laserCloudSurfLast->push_back(tempPoint);
+            surfLastCov.push_back(cov);
+
+            tempPC.clear();
+            tempPC.push_back(surfTemp->points[k]);
+            cnt++;
+        }
+    }
 }
 
 void laserCloudSharpHandler(const sensor_msgs::PointCloud2ConstPtr &cornerPointsSharp2)
@@ -187,25 +279,13 @@ void laserCloudClusterHandler(const sensor_msgs::PointCloud2ConstPtr &laserCloud
     mBuf.unlock();
 }
 
-void imuIncrementalHandler(const nav_msgs::OdometryConstPtr &imuIncremental)
-{
-    mBuf.lock();
-    q_imu_incre.w() = imuIncremental->pose.pose.orientation.w;
-    q_imu_incre.x() = imuIncremental->pose.pose.orientation.x;
-    q_imu_incre.y() = imuIncremental->pose.pose.orientation.y;
-    q_imu_incre.z() = imuIncremental->pose.pose.orientation.z;
-    t_imu_incre(0) = imuIncremental->pose.pose.position.x;
-    t_imu_incre(1) = imuIncremental->pose.pose.position.y;
-    t_imu_incre(2) = imuIncremental->pose.pose.position.z;
-    mBuf.unlock();
-}
-
 int main(int argc, char **argv)
 {
     ros::init(argc, argv, "laserOdometry");
     ros::NodeHandle nh;
 
     nh.param<int>("mapping_skip_frame", skipFrameNum, 2);
+    nh.param<double>("matching_threshold",matchingThres, 4);
 
     //printf("Mapping %d Hz \n", 10 / skipFrameNum);
 
@@ -216,8 +296,6 @@ int main(int argc, char **argv)
     ros::Subscriber subLaserCloudFullRes = nh.subscribe<sensor_msgs::PointCloud2>("/velodyne_cloud_2", 100, laserCloudFullResHandler);
 
     ros::Subscriber subClusterPoints = nh.subscribe<sensor_msgs::PointCloud2>("/feature/laser_feature_cluster_points", 100, laserCloudClusterHandler);
-
-    ros::Subscriber subImuIncremental = nh.subscribe<nav_msgs::Odometry>("/imu_incremental", 100, imuIncrementalHandler);
 
     ros::Publisher pubLaserCloudCornerLast = nh.advertise<sensor_msgs::PointCloud2>("/odometry/laser_cloud_corner_last", 100);
 
@@ -295,19 +373,12 @@ int main(int argc, char **argv)
             if (!systemInited)
             {
                 systemInited = true;
-                std::cout << "Initialization finished \n";
+                ROS_INFO("Odometry initialization finished \n");
             }
             else
             {
                 int cornerPointsSharpNum = cornerPointsSharp->points.size();
                 int surfPointsFlatNum = surfPointsFlat->points.size();
-//                parameters[0] = t_imu_incre(0);
-//                parameters[1] = t_imu_incre(1);
-//                parameters[2] = t_imu_incre(2);
-//                parameters[3] = q_imu_incre.x();
-//                parameters[4] = q_imu_incre.y();
-//                parameters[5] = q_imu_incre.z();
-//                parameters[6] = q_imu_incre.w();
 
                 TicToc t_opt;
 
@@ -336,10 +407,16 @@ int main(int argc, char **argv)
                     // find correspondence for corner features
                     for (int i = 0; i < cornerPointsSharpNum; ++i)
                     {
+                        if (laserCloudCornerLast->points.size() <= 0)
+                        {
+                            ROS_WARN("Corner feature point is empty.");
+                            break;
+                        }
+
                         TransformToStart(&(cornerPointsSharp->points[i]), &pointSel);
 
-                        kdtreeCornerLast->nearestKSearch(pointSel, 5, pointSearchInd2, pointSearchSqDis2);
-                        double minPointSqDis2 = 3;
+                        kdtreeCornerLast->nearestKSearch(pointSel, 1, pointSearchInd2, pointSearchSqDis2);
+                        double minPointSqDis2 = matchingThres;
                         int minPointInd2 = -1;
                         for (size_t s = 0; s < pointSearchInd2.size(); s++)
                         {
@@ -362,57 +439,47 @@ int main(int argc, char **argv)
                         }
                         if (minPointInd2 >= 0)
                         {
-                            pcl::PointCloud<pcl::PointXYZINormal> clusters;
-                            for (size_t j = 0; j < laserCloudCornerLast->points.size(); j++)
-                            {
-                                if (laserCloudCornerLast->points[minPointInd2]._PointXYZINormal::normal_y != laserCloudCornerLast->points[j]._PointXYZINormal::normal_y)
-                                {
-                                    continue;
-                                }
-                                clusters.push_back(laserCloudCornerLast->points[j]);
-                            }
-                            if (clusters.points.size() >= 5)
-                            {
-                                Eigen::Matrix3d covariance = getCovariance(clusters);
-                                Eigen::Vector3d mean = getMean(clusters);
-                                Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> saes(covariance);
+                            Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> saes(cornerLastCov[minPointInd2]);
 
-                                // if is indeed line feature
-                                // note Eigen library sort eigenvalues in increasing order
-                                Eigen::Vector3d unit_direction = saes.eigenvectors().col(2);
+                            // if is indeed line feature
+                            // note Eigen library sort eigenvalues in increasing order
+                            Eigen::Vector3d unit_direction = saes.eigenvectors().col(2);
 
-                                Eigen::Vector3d curr_point(cornerPointsSharp->points[i].x,
-                                                           cornerPointsSharp->points[i].y,
-                                                           cornerPointsSharp->points[i].z);
-                                if (saes.eigenvalues()[2] > 16 * saes.eigenvalues()[1] && saes.eigenvalues()[1] < pow(0.5,2))
-                                {
-                                    Eigen::Vector3d point_on_line;
-                                    point_on_line(0) = mean(0);
-                                    point_on_line(1) = mean(1);
-                                    point_on_line(2) = mean(2);
-                                    Eigen::Vector3d point_a, point_b;
-                                    point_a = 0.1 * unit_direction + point_on_line;
-                                    point_b = -0.1 * unit_direction + point_on_line;
-                                    double s;
-                                    if (DISTORTION)
-                                        s = (cornerPointsSharp->points[i]._PointXYZINormal::curvature - int(cornerPointsSharp->points[i]._PointXYZINormal::curvature)) / SCAN_PERIOD;
-                                    else
-                                        s = 1.0;
-                                    ceres::CostFunction *cost_function = LidarEdgeFactor::Create(curr_point, point_a, point_b, s);
-                                    problem.AddResidualBlock(cost_function, loss_function, parameters, parameters + 3);
-                                    corner_correspondence++;
-                                }
-                            }
+                            Eigen::Vector3d curr_point(cornerPointsSharp->points[i].x,
+                                                       cornerPointsSharp->points[i].y,
+                                                       cornerPointsSharp->points[i].z);
+
+                            Eigen::Vector3d point_on_line;
+                            point_on_line(0) = laserCloudCornerLast->points[minPointInd2].x;
+                            point_on_line(1) = laserCloudCornerLast->points[minPointInd2].y;
+                            point_on_line(2) = laserCloudCornerLast->points[minPointInd2].z;
+                            Eigen::Vector3d point_a, point_b;
+                            point_a = unit_direction + point_on_line;
+                            point_b = -unit_direction + point_on_line;
+                            double s;
+                            if (DISTORTION)
+                                s = (cornerPointsSharp->points[i]._PointXYZINormal::curvature - int(cornerPointsSharp->points[i]._PointXYZINormal::curvature)) / SCAN_PERIOD;
+                            else
+                                s = 1.0;
+                            ceres::CostFunction *cost_function = LidarEdgeFactor::Create(curr_point, point_a, point_b, s);
+                            problem.AddResidualBlock(cost_function, loss_function, parameters, parameters + 3);
+                            corner_correspondence++;
                         }
                     }
 
                     // find correspondence for plane features
                     for (int i = 0; i < surfPointsFlatNum; ++i)
                     {
-                        TransformToStart(&(surfPointsFlat->points[i]), &pointSel);
-                        kdtreeSurfLast->nearestKSearch(pointSel, 5, pointSearchInd2, pointSearchSqDis2);
+                        if (laserCloudSurfLast->points.size() <= 0)
+                        {
+                            ROS_WARN("Surf feature point is empty.");
+                            break;
+                        }
 
-                        double minPointSqDis2 = 3;
+                        TransformToStart(&(surfPointsFlat->points[i]), &pointSel);
+                        kdtreeSurfLast->nearestKSearch(pointSel, 1, pointSearchInd2, pointSearchSqDis2);
+
+                        double minPointSqDis2 = matchingThres;
                         int minPointInd2 = -1;
                         for (size_t s = 0; s < pointSearchInd2.size(); s++)
                         {
@@ -435,49 +502,35 @@ int main(int argc, char **argv)
                         }
                         if (minPointInd2 >= 0)
                         {
-                            pcl::PointCloud<pcl::PointXYZINormal> clusters;
-                            for (size_t j = 0; j < laserCloudSurfLast->points.size(); j++)
-                            {
-                                if (laserCloudSurfLast->points[minPointInd2]._PointXYZINormal::normal_y != laserCloudSurfLast->points[j]._PointXYZINormal::normal_y)
-                                {
-                                    continue;
-                                }
-                                clusters.push_back(laserCloudSurfLast->points[j]);
-                            }
+                            Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> saes(surfLastCov[minPointInd2]);
 
-                            if (clusters.points.size() >= 5)
-                            {
-                                Eigen::Matrix3d covariance = getCovariance(clusters);
-                                Eigen::Vector3d mean = getMean(clusters);
-                                Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> saes(covariance);
-                                if (saes.eigenvalues()[0] < pow(0.3,2))
-                                {
-                                    // if is indeed line feature
-                                    // note Eigen library sort eigenvalues in increasing order
-                                    Eigen::Vector3d direction1 = saes.eigenvectors().col(2);
-                                    Eigen::Vector3d direction2 = saes.eigenvectors().col(1);
+                            // if is indeed line feature
+                            // note Eigen library sort eigenvalues in increasing order
+                            Eigen::Vector3d direction1 = saes.eigenvectors().col(2);
+                            Eigen::Vector3d direction2 = saes.eigenvectors().col(1);
 
-                                    Eigen::Vector3d curr_point(surfPointsFlat->points[i].x,
-                                                               surfPointsFlat->points[i].y,
-                                                               surfPointsFlat->points[i].z);
+                            Eigen::Vector3d curr_point(surfPointsFlat->points[i].x,
+                                                       surfPointsFlat->points[i].y,
+                                                       surfPointsFlat->points[i].z);
 
-                                    Eigen::Vector3d point_on_surf;
-                                    point_on_surf = mean;
-                                    Eigen::Vector3d point_a, point_b, point_c;
-                                    point_a = 0.1 * direction1 + point_on_surf;
-                                    point_b = -0.1 * direction1 + point_on_surf;
-                                    point_c = 0.1 * direction2 + point_on_surf;
+                            Eigen::Vector3d point_on_surf;
+                            point_on_surf(0) = laserCloudSurfLast->points[minPointInd2].x;
+                            point_on_surf(1) = laserCloudSurfLast->points[minPointInd2].y;
+                            point_on_surf(2) = laserCloudSurfLast->points[minPointInd2].z;
+                            Eigen::Vector3d point_a, point_b, point_c;
+                            point_a = direction1 + point_on_surf;
+                            point_b = -direction1 + point_on_surf;
+                            point_c = direction2 + point_on_surf;
 
-                                    double s;
-                                    if (DISTORTION)
-                                        s = (surfPointsFlat->points[i]._PointXYZINormal::curvature - int(surfPointsFlat->points[i]._PointXYZINormal::curvature)) / SCAN_PERIOD;
-                                    else
-                                        s = 1.0;
-                                    ceres::CostFunction *cost_function = LidarPlaneFactor::Create(curr_point, point_a, point_b, point_c, s);
-                                    problem.AddResidualBlock(cost_function, loss_function, parameters, parameters + 3);
-                                    plane_correspondence++;
-                                }
-                            }
+                            double s;
+                            if (DISTORTION)
+                                s = (surfPointsFlat->points[i]._PointXYZINormal::curvature - int(surfPointsFlat->points[i]._PointXYZINormal::curvature)) / SCAN_PERIOD;
+                            else
+                                s = 1.0;
+                            ceres::CostFunction *cost_function = LidarPlaneFactor::Create(curr_point, point_a, point_b, point_c, s);
+                            problem.AddResidualBlock(cost_function, loss_function, parameters, parameters + 3);
+                            plane_correspondence++;
+
                         }
                     }
 
@@ -525,13 +578,22 @@ int main(int argc, char **argv)
             pubLaserPath.publish(laserPath);
 
 
-            pcl::PointCloud<PointType>::Ptr laserCloudTemp = cornerPointsCluster;
-            cornerPointsCluster = laserCloudCornerLast;
-            laserCloudCornerLast = laserCloudTemp;
+//            pcl::PointCloud<PointType>::Ptr laserCloudTemp = cornerPointsCluster;
+//            cornerPointsCluster = laserCloudCornerLast;
+//            laserCloudCornerLast = laserCloudTemp;
 
-            laserCloudTemp = surfPointsCluster;
-            surfPointsCluster = laserCloudSurfLast;
-            laserCloudSurfLast = laserCloudTemp;
+//            laserCloudTemp = surfPointsCluster;
+//            surfPointsCluster = laserCloudSurfLast;
+//            laserCloudSurfLast = laserCloudTemp;
+
+            laserCloudCornerLast->clear();
+            cornerLastCov.clear();
+            laserCloudSurfLast->clear();
+            surfLastCov.clear();
+
+            getCornerProbabilityDistributions(cornerPointsCluster);
+
+            getSurfProbabilityDistributions(surfPointsCluster);
 
             laserCloudCornerLastNum = laserCloudCornerLast->points.size();
             laserCloudSurfLastNum = laserCloudSurfLast->points.size();
@@ -545,13 +607,13 @@ int main(int argc, char **argv)
                 frameCount = 0;
 
                 sensor_msgs::PointCloud2 laserCloudCornerLast2;
-                pcl::toROSMsg(*laserCloudCornerLast, laserCloudCornerLast2);
+                pcl::toROSMsg(*cornerPointsCluster, laserCloudCornerLast2);
                 laserCloudCornerLast2.header.stamp = ros::Time().fromSec(timeLaserCloudCluster);
                 laserCloudCornerLast2.header.frame_id = "/body";
                 pubLaserCloudCornerLast.publish(laserCloudCornerLast2);
 
                 sensor_msgs::PointCloud2 laserCloudSurfLast2;
-                pcl::toROSMsg(*laserCloudSurfLast, laserCloudSurfLast2);
+                pcl::toROSMsg(*surfPointsCluster, laserCloudSurfLast2);
                 laserCloudSurfLast2.header.stamp = ros::Time().fromSec(timeLaserCloudCluster);
                 laserCloudSurfLast2.header.frame_id = "/body";
                 pubLaserCloudSurfLast.publish(laserCloudSurfLast2);
@@ -562,8 +624,6 @@ int main(int argc, char **argv)
                 laserCloudFullRes3.header.frame_id = "/body";
                 pubLaserCloudFullRes.publish(laserCloudFullRes3);
             }
-            //printf("publication time %f ms \n", t_pub.toc());
-            //printf("whole laserOdometry time %f ms \n", t_whole.toc());
             if(t_whole.toc() > 100)
                 ROS_WARN("odometry process over 100ms");
 

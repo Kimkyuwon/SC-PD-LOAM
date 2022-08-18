@@ -63,11 +63,18 @@ add_executable(laserOdometry src/laserOdometry.cpp)
 target_link_libraries(laserOdometry ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${CERES_LIBRARIES})
 
 add_executable(laserMapping src/laserMapping.cpp)
-target_link_libraries(laserMapping ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${CERES_LIBRARIES})
+target_link_libraries(laserMapping ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${CERES_LIBRARIES} ${OpenMP_CXX_FLAGS} gtsam)
 add_dependencies(laserMapping ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 
 add_executable(imuPreIntegration src/imuPreIntegration.cpp)
 target_link_libraries(imuPreIntegration ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${CERES_LIBRARIES} gtsam)
+
+add_executable(imuPreIntegration_kitti src/imuPreIntegration_kitti.cpp)
+target_link_libraries(imuPreIntegration_kitti ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${CERES_LIBRARIES} gtsam)
+
+add_executable(mapVisualization src/mapVisualization.cpp)
+target_link_libraries(mapVisualization ${catkin_LIBRARIES} ${PCL_LIBRARIES})
+add_dependencies(mapVisualization ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 
 add_executable(laserPG
     src/laserPoseGraph.cpp

@@ -1,40 +1,40 @@
 <launch>
-    <param name="imu_topic" type="string" value="/camera/imu" />
+    <param name="imu_topic" type="string" value="/kitti/oxts/imu" />
     <param name="lidar_topic" type="string" value="/velodyne_points" />
-    <param name="scan_line" type="int" value="32" />
+    <param name="scan_line" type="int" value="64" />
 
     <!-- if 1, do mapping 10 Hz, if 2, do mapping 5 Hz. Suggest to use 1, it will adjust frequence automaticlly -->
     <param name="mapping_skip_frame" type="int" value="1" />
 
     <!-- remove too closed points -->
-    <param name="minimum_range" type="double" value="4"/>
-    <param name="clustering_size" type="double" value="3"/>
+    <param name="minimum_range" type="double" value="5"/>
+    <param name="clustering_size" type="double" value="2.5"/>
 
     <param name="mapping_resolution" type="double" value="0.4"/>
     <param name="map_matching_range" type="double" value="80"/>
     <param name="matching_threshold" type="double" value="3"/>
-    <param name="map_viz_range" type="double" value="100"/>
-    <param name="get_GT" type="bool" value="false"/>
+    <param name="map_viz_range" type="double" value="400"/>
+    <param name="get_GT" type="bool" value="true"/>
 
     <!--  -->
-    <param name="lidar_type" type="string" value="HDL32"/>
+    <param name="lidar_type" type="string" value="HDL64"/>
 
     <param name="keyframe_meter_gap" type="double" value="1"/>    <!-- indoor : 1, outdoor : 2 -->
     <param name="keyframe_deg_gap" type="double" value="30.0"/>
 
     <!-- Scan Context -->
     <param name="sc_dist_thres" type="double" value="0.25"/> <!-- if want no outliers, use 0.1-0.15 -->
-    <param name="sc_max_radius" type="double" value="80.0"/>
+    <param name="sc_max_radius" type="double" value="100.0"/>
     <param name="sc_resolution" type="double" value="0.4"/>
 
     <param name="save_directory" type="string" value="/home/kkw/kkw_ws/src/pd_loam/"/>  <!-- CHANGE THIS and end with / -->
-    <param name="evaluation_type" type="string" value="rpg"/>   <!-- rpg : rpg_trajectory_evaluation, evo : evo -->
+    <param name="evaluation_type" type="string" value="evo"/>   <!-- rpg : rpg_trajectory_evaluation, evo : evo -->
 
     <!-- imu parameter -->
-    <param name="accBias" type="double" value="0.001"/>
-    <param name="gyroBias" type="double" value="0.00001"/>
-    <param name="accNoise" type="double" value="0.1"/>
-    <param name="gyroNoise" type="double" value="0.05"/>
+    <param name="accBias" type="double" value="0.0001"/>
+    <param name="gyroBias" type="double" value="0.000001"/>
+    <param name="accNoise" type="double" value="0.01"/>
+    <param name="gyroNoise" type="double" value="0.005"/>
     <param name="gravity" type="double" value="9.80511"/>
     <param name="dt" type="double" value="0.016"/>
 
@@ -43,13 +43,13 @@
     <node pkg="pd_loam" type="laserOdometry" name="laserOdometry" output="screen" />
     <node pkg="pd_loam" type="laserMapping" name="laserMapping" output="screen" />
     <node pkg="pd_loam" type="laserPG" name="laserPG" output="screen" />
-    <node pkg="pd_loam" type="imuPreIntegration" name="imuPreIntegration" output="screen" /> -->
+    <!-- <node pkg="pd_loam" type="imuPreIntegration_kitti" name="imuPreIntegration_kitti" output="screen" /> -->
     <node pkg="pd_loam" type="mapVisualization" name="mapVisualization" output="screen" />
 
     <!-- visulaization -->
     <arg name="rviz" default="true" />
     <group if="$(arg rviz)">
-        <node launch-prefix="nice" pkg="rviz" type="rviz" name="rviz" args="-d $(find pd_loam)/rviz_cfg/pd_loam.rviz" />
+        <node launch-prefix="nice" pkg="rviz" type="rviz" name="rviz" args="-d $(find pd_loam)/rviz_cfg/pd_loam_kitti.rviz" />
     </group>
 
 </launch>

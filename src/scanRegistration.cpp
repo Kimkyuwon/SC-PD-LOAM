@@ -49,8 +49,9 @@
 #include <pcl/filters/voxel_grid.h>
 #include <pcl/search/kdtree.h>
 #include <pcl/search/search.h>
+#include <pcl/kdtree/kdtree_flann.h>
 #include <pcl/segmentation/extract_clusters.h>
-#include <pcl/features/normal_3d.h>
+#include <pcl/filters/statistical_outlier_removal.h>
 #include <ros/ros.h>
 #include <sensor_msgs/Imu.h>
 #include <sensor_msgs/PointCloud2.h>
@@ -72,10 +73,16 @@ int systemInitCount = 0;
 bool systemInited = false;
 int N_SCANS = 0;
 const float CURVATURE_THRESHOLD = 0.1;
-float cloudCurvature[400000];
-int cloudSortInd[400000];
-int cloudNeighborPicked[400000];
-int cloudLabel[400000];
+float cloudCurvature[200000];
+int cloudSortInd[200000];
+int cloudNeighborPicked[200000];
+int cloudLabel[200000];
+int cloudOcclusion[200000];
+float cloudAlphaAngle[200000];
+int SharpEdgeNum, LessSharpEdgeNum, FlatSurfNum, LessFlatSurfNum;
+
+double clustering_size = 0;
+pcl::PointCloud<pcl::PointXYZINormal> Cluster_points;
 
 int FrameNum = 0;
 double ProcessTimeMean = 0;
@@ -123,55 +130,162 @@ void removeClosedPointCloud(const pcl::PointCloud<PointT> &cloud_in,
     cloud_out.is_dense = true;
 }
 
-void clusteringCornerPointCloud(const pcl::PointCloud<PointType> &cornerPointsLessSharp, std::vector<int> clusterPicked,
-                                std::vector<pcl::PointCloud<PointType>> &corner_clusterPC)
-{
-    pcl::PointCloud<PointType> cluster_points;
+void clusteringCornerPointCloud(const pcl::PointCloud<PointType> &cornerPointsLessSharp)
+{    
+    std::vector<pcl::PointCloud<PointType>> corner_clusterPC;
+    std::vector<int> clusterPicked(cornerPointsLessSharp.size(), 0);
+
+    pcl::PointCloud<PointType>::Ptr cluster_points (new pcl::PointCloud<PointType>());
+    int cnt = 0;
     for (size_t i = 0; i < cornerPointsLessSharp.size() - 1; i++)
     {
         if (clusterPicked[i] == 1)  continue;
 
-        cluster_points.clear();
-        PointType t;
-        t = cornerPointsLessSharp[i];
-        cluster_points.push_back(t);
+        cluster_points->clear();
+        cluster_points->push_back(cornerPointsLessSharp.points[i]);
         clusterPicked[i] = 1;
-        float min_dist = 2;
-        int currentInd = -1;
-        int compLayer = (int)cornerPointsLessSharp[i]._PointXYZINormal::curvature;
-        int currentLayer = (int)cornerPointsLessSharp[i]._PointXYZINormal::curvature;
-        for (size_t j = i + 1; j < cornerPointsLessSharp.size(); j++)
+        float dist_Threshold = clustering_size;
+        for (size_t jj = i + 1; jj < cornerPointsLessSharp.points.size(); jj++)
         {
-            if ((int)cornerPointsLessSharp[i]._PointXYZINormal::curvature == (int)cornerPointsLessSharp[j]._PointXYZINormal::curvature)
-            {
-                continue;
-            }
-            compLayer = (int)cornerPointsLessSharp[j]._PointXYZINormal::curvature;
-
-            if (currentLayer != compLayer && currentInd != -1 && clusterPicked[currentInd] != 1 )
-            {
-                PointType t;
-                t = cornerPointsLessSharp[currentInd];
-                cluster_points.push_back(t);
-                clusterPicked[currentInd] = 1;
-                currentInd = -1;
-                min_dist = 2;
-            }
-
-            PointType temp_curr_point = cornerPointsLessSharp[i];
-            PointType temp_comp_point = cornerPointsLessSharp[j];
+            PointType temp_curr_point = cornerPointsLessSharp.points[i];
+            PointType temp_comp_point = cornerPointsLessSharp.points[jj];
             float diffX = temp_curr_point.x - temp_comp_point.x;
             float diffY = temp_curr_point.y - temp_comp_point.y;
+
             float diffDist = sqrt(diffX * diffX + diffY * diffY);
 
-            if (diffDist > min_dist)   continue;
-            min_dist = diffDist;
-            currentInd = j;
-            currentLayer = (int)cornerPointsLessSharp[j]._PointXYZINormal::curvature;
+            if (diffDist < dist_Threshold && clusterPicked[jj] != 1)
+            {
+                clusterPicked[jj] = 1;
+                cluster_points->push_back(cornerPointsLessSharp.points[jj]);
+            }
         }
-        if (cluster_points.size() >= 5)
+        if (cluster_points->size() >= 5)
         {
-            corner_clusterPC.push_back(cluster_points);
+            pcl::KdTreeFLANN<pcl::PointXYZINormal>::Ptr kdtreeCluster(new pcl::KdTreeFLANN<pcl::PointXYZINormal>());
+            std::vector<int> pointSearchInd;
+            std::vector<float> pointSearchSqDis;
+            kdtreeCluster->setInputCloud(cluster_points);
+            std::vector<int> tmpkdtreePicked(cluster_points->points.size(), 0);
+            pcl::PointCloud<PointType> tmp_kdtree_cluster;
+            for (auto t = 0; t < cluster_points->size(); t++)
+            {
+                if (tmpkdtreePicked[t] == 1)  continue;
+                cluster_points->points[t]._PointXYZINormal::normal_y = cnt;
+                cluster_points->points[t]._PointXYZINormal::normal_z = 1;
+                bool cluster_flag = false;
+                tmp_kdtree_cluster.clear();
+                tmp_kdtree_cluster.push_back(cluster_points->points[t]);
+                tmpkdtreePicked[t] = 1;
+                kdtreeCluster->nearestKSearch(cluster_points->points[t], cluster_points->size(), pointSearchInd, pointSearchSqDis);
+                for (auto ii = 0; ii < cluster_points->size(); ii++)
+                {
+                    if (tmpkdtreePicked[pointSearchInd[ii]] == 1 || pointSearchInd[ii] == t)   continue;
+
+                    cluster_points->points[pointSearchInd[ii]]._PointXYZINormal::normal_y = cnt;
+                    cluster_points->points[pointSearchInd[ii]]._PointXYZINormal::normal_z = 1;
+                    tmp_kdtree_cluster.push_back(cluster_points->points[pointSearchInd[ii]]);
+
+                    tmpkdtreePicked[pointSearchInd[ii]] = 1;
+                    if (tmp_kdtree_cluster.size() < 5) continue;
+
+                    Eigen::Matrix3d cov = getCovariance(tmp_kdtree_cluster);
+                    Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> saes(cov);
+                    Eigen::Vector3d eigVec = saes.eigenvectors().col(2);
+                    double atanAngle = atan2(eigVec(2),sqrt(pow(eigVec(0),2)+pow(eigVec(1),2)));
+                    if (saes.eigenvalues()[2] > 4*saes.eigenvalues()[1] && fabs(rad2deg(atanAngle)) > 60)
+                    {
+                        cluster_flag = true;
+                        break;
+                    }
+                    cluster_flag = false;
+                }
+                if (cluster_flag == true)
+                {
+                    Cluster_points += tmp_kdtree_cluster;
+                    cnt = cnt + 1;
+                }
+            }
+        }
+    }
+}
+
+void clusteringSurfPointCloud(const pcl::PointCloud<PointType> &surfPointsLessFlat)
+{
+    pcl::PointCloud<PointType>::Ptr tmp_cluster_points (new pcl::PointCloud<PointType>());
+    std::vector<int> tmpclusterPicked(surfPointsLessFlat.points.size(), 0);
+    int cnt = 0;
+    for (size_t kk = 0; kk < surfPointsLessFlat.points.size(); kk++)
+    {
+        if (tmpclusterPicked[kk] == 1)  continue;
+
+        tmp_cluster_points->clear();
+        tmp_cluster_points->push_back(surfPointsLessFlat.points[kk]);
+        tmpclusterPicked[kk] = 1;
+        float dist_Threshold = clustering_size;
+        for (size_t jj = kk + 1; jj < surfPointsLessFlat.points.size(); jj++)
+        {
+            PointType temp_curr_point = surfPointsLessFlat.points[kk];
+            PointType temp_comp_point = surfPointsLessFlat.points[jj];
+            float diffX = temp_curr_point.x - temp_comp_point.x;
+            float diffY = temp_curr_point.y - temp_comp_point.y;
+            float diffZ = temp_curr_point.z - temp_comp_point.z;
+
+            float diffDist = sqrt(diffX * diffX + diffY * diffY + diffZ * diffZ);
+
+            if (diffDist < dist_Threshold && tmpclusterPicked[jj] != 1)
+            {
+                tmpclusterPicked[jj] = 1;
+                tmp_cluster_points->push_back(surfPointsLessFlat.points[jj]);
+            }
+        }
+
+        if (tmp_cluster_points->size() >= 5)
+        {
+            pcl::KdTreeFLANN<pcl::PointXYZINormal>::Ptr kdtreeCluster(new pcl::KdTreeFLANN<pcl::PointXYZINormal>());
+            std::vector<int> pointSearchInd;
+            std::vector<float> pointSearchSqDis;
+            kdtreeCluster->setInputCloud(tmp_cluster_points);
+            std::vector<int> tmpkdtreePicked(tmp_cluster_points->points.size(), 0);
+            pcl::PointCloud<PointType> tmp_kdtree_cluster;
+            for (auto t = 0; t < tmp_cluster_points->size(); t++)
+            {
+                if (tmpkdtreePicked[t] == 1)  continue;
+                tmp_cluster_points->points[t]._PointXYZINormal::normal_y = cnt;
+                tmp_cluster_points->points[t]._PointXYZINormal::normal_z = 2;
+                bool cluster_flag = false;
+                tmp_kdtree_cluster.clear();
+                tmp_kdtree_cluster.push_back(tmp_cluster_points->points[t]);
+                tmpkdtreePicked[t] = 1;
+                kdtreeCluster->nearestKSearch(tmp_cluster_points->points[t], tmp_cluster_points->size(), pointSearchInd, pointSearchSqDis);
+                for (auto ii = 0; ii < tmp_cluster_points->size(); ii++)
+                {
+                    if (tmpkdtreePicked[pointSearchInd[ii]] == 1 || pointSearchSqDis[ii] > clustering_size || pointSearchInd[ii] == t)   continue;
+
+                    tmp_cluster_points->points[pointSearchInd[ii]]._PointXYZINormal::normal_y = cnt;
+                    tmp_cluster_points->points[pointSearchInd[ii]]._PointXYZINormal::normal_z = 2;
+                    tmp_kdtree_cluster.push_back(tmp_cluster_points->points[pointSearchInd[ii]]);
+
+                    tmpkdtreePicked[pointSearchInd[ii]] = 1;
+                    if (tmp_kdtree_cluster.size() < 5) continue;
+
+                    Eigen::Matrix3d cov = getCovariance(tmp_kdtree_cluster);
+                    Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> saes(cov);
+
+                    if (saes.eigenvalues()[0] > pow(0.1,2))
+                    {
+                        tmp_kdtree_cluster.points.pop_back();
+                        tmpkdtreePicked[pointSearchInd[ii]] = 0;
+                        break;
+                    }
+                    cluster_flag = true;
+                }
+                if (cluster_flag == true)
+                {
+                    Cluster_points += tmp_kdtree_cluster;
+                    cnt = cnt + 1;
+                }
+            }
         }
     }
 }
@@ -194,6 +308,7 @@ void laserCloudHandler(const sensor_msgs::PointCloud2ConstPtr &laserCloudMsg)
     TicToc t_prepare;
     std::vector<int> scanStartInd(N_SCANS, 0);
     std::vector<int> scanEndInd(N_SCANS, 0);
+    std::vector<float> alphaAngle(N_SCANS, 0);
 
     pcl::PointCloud<pcl::PointXYZI> laserCloudIn;
     pcl::fromROSMsg(*laserCloudMsg, laserCloudIn);
@@ -259,8 +374,7 @@ void laserCloudHandler(const sensor_msgs::PointCloud2ConstPtr &laserCloudMsg)
             else
                 scanID = N_SCANS / 2 + int((-8.83 - angle) * 2.0 + 0.5);
 
-            // use [0 50]  > 50 remove outlies
-            if (angle > 2 || angle < -24.33 || scanID > 50 || scanID < 0)
+            if (angle < -24.33 || scanID > 40 || scanID < 0)
             {
                 count--;
                 continue;
@@ -315,10 +429,12 @@ void laserCloudHandler(const sensor_msgs::PointCloud2ConstPtr &laserCloudMsg)
 
         float relTime = (ori - startOri) / (endOri - startOri);
         point._PointXYZINormal::curvature = scanID + scanPeriod * relTime;
+        point._PointXYZINormal::normal_x = ori;
         laserCloudScans[scanID].push_back(point);
     }
     
     cloudSize = count;
+
     //printf("points size %d \n", cloudSize);
 
     pcl::PointCloud<PointType>::Ptr laserCloud(new pcl::PointCloud<PointType>());
@@ -327,6 +443,7 @@ void laserCloudHandler(const sensor_msgs::PointCloud2ConstPtr &laserCloudMsg)
         scanStartInd[i] = laserCloud->size() + 5;
         *laserCloud += laserCloudScans[i];
         scanEndInd[i] = laserCloud->size() - 6;
+        alphaAngle[i] = (endOri - startOri)/laserCloudScans[i].size();
     }
 
     //printf("prepare time %f \n", t_prepare.toc());
@@ -337,10 +454,40 @@ void laserCloudHandler(const sensor_msgs::PointCloud2ConstPtr &laserCloudMsg)
         float diffY = laserCloud->points[i - 5].y + laserCloud->points[i - 4].y + laserCloud->points[i - 3].y + laserCloud->points[i - 2].y + laserCloud->points[i - 1].y - 10 * laserCloud->points[i].y + laserCloud->points[i + 1].y + laserCloud->points[i + 2].y + laserCloud->points[i + 3].y + laserCloud->points[i + 4].y + laserCloud->points[i + 5].y;
         float diffZ = laserCloud->points[i - 5].z + laserCloud->points[i - 4].z + laserCloud->points[i - 3].z + laserCloud->points[i - 2].z + laserCloud->points[i - 1].z - 10 * laserCloud->points[i].z + laserCloud->points[i + 1].z + laserCloud->points[i + 2].z + laserCloud->points[i + 3].z + laserCloud->points[i + 4].z + laserCloud->points[i + 5].z;
 
+        float neighborDist1 = sqrt(
+                pow((laserCloud->points[i - 1].x - laserCloud->points[i].x),2) +
+                pow((laserCloud->points[i - 1].y - laserCloud->points[i].y),2) +
+                pow((laserCloud->points[i - 1].z - laserCloud->points[i].z),2));
+        float neighborDist2 = sqrt(
+                pow((laserCloud->points[i + 1].x - laserCloud->points[i].x),2) +
+                pow((laserCloud->points[i + 1].y - laserCloud->points[i].y),2) +
+                pow((laserCloud->points[i + 1].z - laserCloud->points[i].z),2));
+
+        float range1 = sqrt(pow(laserCloud->points[i].x,2) + pow(laserCloud->points[i].y,2) + pow(laserCloud->points[i].z,2));
+        float range2 = sqrt(pow(laserCloud->points[i-1].x,2) + pow(laserCloud->points[i-1].y,2) + pow(laserCloud->points[i-1].z,2));
+        float range3 = sqrt(pow(laserCloud->points[i+1].x,2) + pow(laserCloud->points[i+1].y,2) + pow(laserCloud->points[i+1].z,2));
+
+        float d1 = fmax(range1, range2);
+        float d2 = fmin(range1, range2);
+        float alpha = alphaAngle[int(laserCloud->points[i]._PointXYZINormal::curvature)];
+        float angle1 = atan2(d2*sin(alpha), (d1 -d2*cos(alpha)));
+        d1 = fmax(range1, range3);
+        d2 = fmin(range1, range3);
+        float angle2 = atan2(d2*sin(alpha), (d1 -d2*cos(alpha)));
+
         cloudCurvature[i] = diffX * diffX + diffY * diffY + diffZ * diffZ;
         cloudSortInd[i] = i;
         cloudNeighborPicked[i] = 0;
         cloudLabel[i] = 0;
+        if (neighborDist1 > 0.1 || neighborDist2 > 0.1)
+        {
+            cloudOcclusion[i] = 1;
+        }
+        else
+        {
+            cloudOcclusion[i] = 0;
+        }
+        cloudAlphaAngle[i] = rad2deg(fmin(angle1, angle2));
     }
 
 
@@ -370,20 +517,22 @@ void laserCloudHandler(const sensor_msgs::PointCloud2ConstPtr &laserCloudMsg)
             int largestPickedNum = 0;
             for (int k = ep; k >= sp; k--)
             {
-                int ind = cloudSortInd[k];
+                int ind = cloudSortInd[k];                
 
                 if (cloudNeighborPicked[ind] == 0 &&
-                    cloudCurvature[ind] > CURVATURE_THRESHOLD)
+                    cloudCurvature[ind] > CURVATURE_THRESHOLD &&
+                    cloudOcclusion[ind] == 0 && cloudAlphaAngle[ind] > 50 &&
+                    ind != sp && ind != ep)
                 {
 
                     largestPickedNum++;
-                    if (largestPickedNum <= 2)
+                    if (largestPickedNum <= SharpEdgeNum)
                     {
                         cloudLabel[ind] = 2;
                         cornerPointsSharp.push_back(laserCloud->points[ind]);
                         cornerPointsLessSharpScan->push_back(laserCloud->points[ind]);
                     }
-                    else if (largestPickedNum <= 10)
+                    else if (largestPickedNum <= LessSharpEdgeNum)
                     {
                         cloudLabel[ind] = 1;
                         cornerPointsLessSharpScan->push_back(laserCloud->points[ind]);
@@ -428,14 +577,16 @@ void laserCloudHandler(const sensor_msgs::PointCloud2ConstPtr &laserCloudMsg)
                 int ind = cloudSortInd[k];
 
                 if (cloudNeighborPicked[ind] == 0 &&
-                    cloudCurvature[ind] < CURVATURE_THRESHOLD)
+                    cloudCurvature[ind] < CURVATURE_THRESHOLD &&
+                    cloudAlphaAngle[ind] > 50)
                 {
 
                     cloudLabel[ind] = -1;
                     surfPointsFlat.push_back(laserCloud->points[ind]);
 
                     smallestPickedNum++;
-                    if (smallestPickedNum >= 5)
+
+                    if (smallestPickedNum >= FlatSurfNum)
                     {
                         break;
                     }
@@ -468,12 +619,15 @@ void laserCloudHandler(const sensor_msgs::PointCloud2ConstPtr &laserCloudMsg)
                 }
             }
 
-            for (int k = sp; k <= ep; k++)
+            int cnt = int((ep-sp)/LessFlatSurfNum) + 1;
+            int k = sp;
+            while(k <= ep)
             {
                 if (cloudLabel[k] <= 0)
                 {
                     surfPointsLessFlatScan->push_back(laserCloud->points[k]);
                 }
+                k += cnt;
             }
         }
 
@@ -493,81 +647,10 @@ void laserCloudHandler(const sensor_msgs::PointCloud2ConstPtr &laserCloudMsg)
     printf("feature extraction time %f ms *************\n", t_feature.toc());
 #endif
 
-    pcl::PointCloud<PointType>::Ptr surfPointsLessFlatPtr (new pcl::PointCloud<PointType> (surfPointsLessFlat));
-    pcl::PointCloud<PointType>::Ptr cornerPointsLessSharpPtr (new pcl::PointCloud<PointType> (cornerPointsLessSharp));
+    Cluster_points.clear();
+    clusteringCornerPointCloud(cornerPointsLessSharp);
 
-    std::vector<pcl::PointCloud<PointType>> corner_clusterPC;
-    pcl::PointCloud<PointType> cluster_points;
-    std::vector<int> clusterPicked(cornerPointsLessSharp.size(), 0);
-
-    clusteringCornerPointCloud(cornerPointsLessSharp, clusterPicked, corner_clusterPC);
-
-    pcl::PointCloud<pcl::PointXYZINormal> Cluster_points;
-    int cnt = 0;
-    for (size_t k = 0; k < corner_clusterPC.size(); k++)
-    {
-        for (size_t ii = 0; ii < corner_clusterPC[k].size(); ii++)
-        {
-            pcl::PointXYZINormal p;
-            p.x = corner_clusterPC[k].points[ii].x;
-            p.y = corner_clusterPC[k].points[ii].y;
-            p.z = corner_clusterPC[k].points[ii].z;
-            p.intensity = corner_clusterPC[k].points[ii].intensity;
-            p._PointXYZINormal::curvature = corner_clusterPC[k].points[ii]._PointXYZINormal::curvature; //layer and scan time
-            p._PointXYZINormal::normal_y = cnt;  //cluster num
-            p._PointXYZINormal::normal_z = 1;    //feature point type (1: corner, 2: surf)
-            Cluster_points.push_back(p);
-        }
-        cnt = cnt + 1;
-    }
-
-    pcl::PointCloud<PointType> tmp_cluster_points;
-    std::vector<int> tmpclusterPicked(surfPointsLessFlatPtr->points.size(), 0);
-    cnt = 0;
-    for (size_t kk = 0; kk < surfPointsLessFlatPtr->points.size(); kk++)
-    {
-        if (tmpclusterPicked[kk] == 1)  continue;
-
-        tmp_cluster_points.clear();
-        PointType t;
-        t = surfPointsLessFlatPtr->points[kk];
-        tmp_cluster_points.push_back(t);
-        tmpclusterPicked[kk] = 1;
-        float dist_Threshold = 3;
-        for (size_t jj = kk + 1; jj < surfPointsLessFlatPtr->points.size(); jj++)
-        {
-            PointType temp_curr_point = surfPointsLessFlatPtr->points[kk];
-            PointType temp_comp_point = surfPointsLessFlatPtr->points[jj];
-            float diffX = temp_curr_point.x - temp_comp_point.x;
-            float diffY = temp_curr_point.y - temp_comp_point.y;
-            float diffZ = temp_curr_point.z - temp_comp_point.z;
-
-            float diffDist = sqrt(diffX * diffX + diffY * diffY + diffZ * diffZ);
-
-            if (diffDist < dist_Threshold && tmpclusterPicked[jj] != 1)
-            {
-                tmpclusterPicked[jj] = 1;
-                tmp_cluster_points.push_back(surfPointsLessFlatPtr->points[jj]);
-            }
-        }
-
-        if (tmp_cluster_points.size() >= 5)
-        {
-            for (size_t ii = 0; ii < tmp_cluster_points.size(); ii++)
-            {
-                pcl::PointXYZINormal p;
-                p.x = tmp_cluster_points.points[ii].x;
-                p.y = tmp_cluster_points.points[ii].y;
-                p.z = tmp_cluster_points.points[ii].z;
-                p.intensity = tmp_cluster_points.points[ii].intensity;
-                p._PointXYZINormal::curvature = tmp_cluster_points.points[ii]._PointXYZINormal::curvature; //layer and scan time
-                p._PointXYZINormal::normal_y = cnt;  //cluster num
-                p._PointXYZINormal::normal_z = 2;    //feature point type (1: corner, 2: surf)
-                Cluster_points.push_back(p);
-            }
-            cnt = cnt + 1;
-        }
-    }
+    clusteringSurfPointCloud(surfPointsLessFlat);
 
     sensor_msgs::PointCloud2 laserCloudOutMsg;
     pcl::toROSMsg(*laserCloud, laserCloudOutMsg);
@@ -627,9 +710,12 @@ int main(int argc, char **argv)
     ros::init(argc, argv, "scanRegistration");
     ros::NodeHandle nh;
 
+    std::string LidarTopic;
+    nh.param<std::string>("lidar_topic", LidarTopic, "/velodyne_points");
     nh.param<int>("scan_line", N_SCANS, 32);
     nh.param<std::string>("lidar_type", LIDAR_TYPE, "HDL32");
     nh.param<double>("minimum_range", MINIMUM_RANGE, 0.1);
+    nh.param<double>("clustering_size", clustering_size, 3);
 
     ROS_INFO("scan line number %d \n", N_SCANS);
 
@@ -639,7 +725,29 @@ int main(int argc, char **argv)
         return 0;
     }
 
-    ros::Subscriber subLaserCloud = nh.subscribe<sensor_msgs::PointCloud2>("/velodyne_points", 100, laserCloudHandler);
+    if (LIDAR_TYPE == "VLP16" && N_SCANS == 16)
+    {
+        SharpEdgeNum = 2;
+        LessSharpEdgeNum = 10;
+        FlatSurfNum = 10;
+        LessFlatSurfNum = 300;
+    }
+    else if (LIDAR_TYPE == "HDL32" && N_SCANS == 32)
+    {
+        SharpEdgeNum = 2;
+        LessSharpEdgeNum = 10;
+        FlatSurfNum = 10;
+        LessFlatSurfNum = 200;
+    }
+    else if (LIDAR_TYPE == "HDL64" && N_SCANS == 64)
+    {
+        SharpEdgeNum = 1;
+        LessSharpEdgeNum = 5;
+        FlatSurfNum = 5;
+        LessFlatSurfNum = 80;
+    }
+
+    ros::Subscriber subLaserCloud = nh.subscribe<sensor_msgs::PointCloud2>(LidarTopic, 100, laserCloudHandler);
 
     pubLaserCloud = nh.advertise<sensor_msgs::PointCloud2>("/velodyne_cloud_2", 100);
 

@@ -1,5 +1,6 @@
 <launch>
-    
+    <param name="imu_topic" type="string" value="/camera/imu" />
+    <param name="lidar_topic" type="string" value="/velodyne_points" />
     <param name="scan_line" type="int" value="16" />
 
     <!-- if 1, do mapping 10 Hz, if 2, do mapping 5 Hz. Suggest to use 1, it will adjust frequence automaticlly -->
@@ -7,36 +8,43 @@
 
     <!-- remove too closed points -->
     <param name="minimum_range" type="double" value="3"/>
+    <param name="clustering_size" type="double" value="2"/>
 
     <param name="mapping_resolution" type="double" value="0.4"/>
+    <param name="map_matching_range" type="double" value="80"/>
+    <param name="matching_threshold" type="double" value="2"/>
+    <param name="map_viz_range" type="double" value="100"/>
+    <param name="get_GT" type="bool" value="false"/>
 
     <!--  -->
-    <param name="lidar_type" type="string" value="VLP16"/> 
-    <remap from="/velodyne_points" to="/velodyne_points"/>
+    <param name="lidar_type" type="string" value="VLP16"/>
 
-    <param name="keyframe_meter_gap" type="double" value="1.0"/>    <!-- indoor : 1, outdoor : 2 -->
-    <param name="keyframe_deg_gap" type="double" value="10.0"/>
+    <param name="keyframe_meter_gap" type="double" value="0.2"/>    <!-- indoor : 1, outdoor : 2 -->
+    <param name="keyframe_deg_gap" type="double" value="30.0"/>
 
     <!-- Scan Context -->
     <param name="sc_dist_thres" type="double" value="0.3"/> <!-- if want no outliers, use 0.1-0.15 -->
     <param name="sc_max_radius" type="double" value="40.0"/>
     <param name="sc_resolution" type="double" value="0.4"/>
 
-    <param name="save_directory" type="string" value="/home/gpslab/kkw_ws/src/pd_loam/"/>  <!-- CHANGE THIS and end with / -->
+    <param name="save_directory" type="string" value="/home/kkw/kkw_ws/src/pd_loam/"/>  <!-- CHANGE THIS and end with / -->
+    <param name="evaluation_type" type="string" value="rpg"/>   <!-- rpg : rpg_trajectory_evaluation, evo : evo -->
 
     <!-- imu parameter -->
-    <param name="accBias" type="double" value="0.0005"/>
-    <param name="gyroBias" type="double" value="2.0e-5"/>
-    <param name="accNoise" type="double" value="0.01"/>
-    <param name="gyroNoise" type="double" value="0.0002"/>
-    <param name="gravity" type="double" value="9.805"/>
+    <param name="accBias" type="double" value="0.001"/>
+    <param name="gyroBias" type="double" value="0.0001"/>
+    <param name="accNoise" type="double" value="0.1"/>
+    <param name="gyroNoise" type="double" value="0.05"/>
+    <param name="gravity" type="double" value="9.80511"/>
+    <param name="dt" type="double" value="0.016"/>
 
     <!-- nodes -->
     <node pkg="pd_loam" type="scanRegistration" name="scanRegistration" output="screen" />
     <node pkg="pd_loam" type="laserOdometry" name="laserOdometry" output="screen" />
     <node pkg="pd_loam" type="laserMapping" name="laserMapping" output="screen" />
     <node pkg="pd_loam" type="laserPG" name="laserPG" output="screen" />
-    <node pkg="pd_loam" type="imuPreIntegration" name="imuPreIntegration" output="screen" />
+    <node pkg="pd_loam" type="imuPreIntegration" name="imuPreIntegration" output="screen" /> -->
+    <node pkg="pd_loam" type="mapVisualization" name="mapVisualization" output="screen" />
 
     <!-- visulaization -->
     <arg name="rviz" default="true" />
