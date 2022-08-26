@@ -801,7 +801,7 @@ void process()
             // get angles
             double roll, pitch, yaw;
             m.getRPY(roll, pitch, yaw);
-            if (final_cost < 0.025)
+            if (final_cost < 0.03)
             {
                 Eigen::MatrixXd HPHTR(6,6);
                 HPHTR = H*P*H.transpose() + R;

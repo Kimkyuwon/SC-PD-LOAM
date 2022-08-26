@@ -35,6 +35,19 @@
 #include <geometry_msgs/PoseStamped.h>
 #include <visualization_msgs/MarkerArray.h>
 
+#include "g2o/core/sparse_optimizer.h"
+#include "g2o/core/optimization_algorithm_levenberg.h"
+#include "g2o/core/block_solver.h"
+
+#include "g2o/solvers/cholmod/linear_solver_cholmod.h"
+
+#include "g2o/types/slam3d/vertex_se3.h"
+#include "g2o/types/slam3d/vertex_pointxyz.h"
+#include "g2o/types/slam3d/edge_se3.h"
+#include "g2o/types/slam3d/edge_se3_pointxyz.h"
+#include "g2o/types/slam3d/se3quat.h"
+#include "g2o/types/slam3d/parameter_se3_offset.h"
+
 #include <eigen3/Eigen/Dense>
 #include <ceres/ceres.h>
 #include "common.h"
@@ -44,7 +57,7 @@
 #include "pd_loam/frame.h"
 #include "pd_loam/gnss.h"
 
-#define DEBUG_MODE_POSEGRAPH 1
+#define DEBUG_MODE_POSEGRAPH 0
 
 std::string ScansDirectory, save_directory;
 
@@ -56,6 +69,7 @@ std::vector<Pose6D> keyframePoses;
 std::vector<Pose6D> keyframePosesUpdated;
 std::vector<double> keyframeTimes;
 std::vector<Pose6D> keyFrameIncrements;
+std::vector<std::tuple<int, int, Eigen::Matrix4d>> edge_measurement;
 
 double keyframeMeterGap;
 double keyframeDegGap, keyframeRadGap;
@@ -88,13 +102,16 @@ double matchingThres;
 Eigen::Map<Eigen::Quaterniond> q_last_curr(para_q);
 Eigen::Map<Eigen::Vector3d> t_last_curr(para_t);
 
-std::mutex mBuf, mKF, mloop;
+std::mutex mBuf, mKF, mloop, mPG;
+
+nav_msgs::Path PGO_path;
 
 visualization_msgs::Marker KF_Marker, loopLine;
 visualization_msgs::MarkerArray KF_Markers, loopLines;
 
 ros::Publisher PubKeyFrameMarker, PubLoopLineMarker;
 ros::Publisher PubLoopCurrent, PubLoopTarget, PubLoopLOAM;
+ros::Publisher PubPGO_path;
 
 Pose6D getOdom(nav_msgs::Odometry _odom)
 {
@@ -165,7 +182,7 @@ void FrameHandler(const pd_loam::frameConstPtr &_frame)
 } // FrameHandler
 
 
-std::optional<Eigen::Matrix4d> doLOAMVirtualRelative( int _loop_kf_idx, int _curr_kf_idx, Eigen::Matrix4d _diff_TF )
+std::optional<Eigen::Matrix4d> doNDTVirtualRelative( int _loop_kf_idx, int _curr_kf_idx, Eigen::Matrix4d _diff_TF )
 {
     // parse pointclouds
     pcl::PointCloud<PointType>::Ptr cureKeyframeFeatureCloud(new pcl::PointCloud<PointType>());
@@ -228,9 +245,7 @@ std::optional<Eigen::Matrix4d> doLOAMVirtualRelative( int _loop_kf_idx, int _cur
     ndt.align(*unused_result, _diff_TF.cast<float>());
 
     Eigen::Matrix4f result_TF = ndt.getFinalTransformation();
-    double score = ndt.getFitnessScore() /cureKeyframeFeatureCloud->size();
-    std::cout<<"score : "<<score<<", size : "<<cureKeyframeFeatureCloud->size()<<", matched : "<<ndt.getTransformationProbability()<<std::endl;
-    if (ndt.hasConverged() == true )
+    if (ndt.hasConverged() == true && ndt.getTransformationProbability() > 3.5)
     {
         pcl::transformPointCloud(*cureKeyframeFeatureCloud, *cureKeyframeFeatureCloud, result_TF);
 
@@ -251,6 +266,116 @@ std::optional<Eigen::Matrix4d> doLOAMVirtualRelative( int _loop_kf_idx, int _cur
     {
         return std::nullopt;
     }
+}
+
+void runG2Oopt()
+{
+    std::unique_ptr<g2o::BlockSolver_6_3::LinearSolverType> linear_solver;
+    linear_solver = g2o::make_unique<g2o::LinearSolverCholmod<g2o::BlockSolver_6_3::PoseMatrixType>>();
+    g2o::OptimizationAlgorithmLevenberg* solver =
+          new g2o::OptimizationAlgorithmLevenberg(g2o::make_unique<g2o::BlockSolver_6_3>(std::move(linear_solver)));
+    g2o::SparseOptimizer* optimizer = new g2o::SparseOptimizer();
+    optimizer->setAlgorithm(solver);
+
+    for (auto i = 0; i < keyframePoses.size(); i++)
+    {
+        Eigen::Matrix3d rotation;
+        rotation = Eigen::AngleAxisd(keyframePoses[i].roll, Eigen::Vector3d::UnitX())
+                 * Eigen::AngleAxisd(keyframePoses[i].pitch, Eigen::Vector3d::UnitY())
+                 * Eigen::AngleAxisd(keyframePoses[i].yaw, Eigen::Vector3d::UnitZ());
+        Eigen::Quaterniond q(rotation);
+        Eigen::Vector3d trans(keyframePoses[i].x,keyframePoses[i].y,keyframePoses[i].z);
+        g2o::SE3Quat CurPose;
+        CurPose.setRotation(q);
+        CurPose.setTranslation(trans);
+
+        g2o::VertexSE3* v_se3 = new g2o::VertexSE3;
+        v_se3->setEstimate(CurPose);
+        v_se3->setId(i);
+
+        if (i == 0)
+        {
+            v_se3->setFixed(true);
+        }
+        optimizer->addVertex(v_se3);
+
+        if (i > 0)
+        {
+            Eigen::Matrix4d from_TF = get_TF_Matrix(keyframePoses[i-1]);
+            Eigen::Matrix4d to_TF = get_TF_Matrix(keyframePoses[i]);
+            Eigen::Matrix4d delta_TF = from_TF.inverse() * to_TF;
+            Eigen::Matrix3d delta_R = delta_TF.block(0,0,3,3);
+            Eigen::Quaterniond delta_q(delta_R);
+            Eigen::Vector3d delta_trans(delta_TF(0,3),delta_TF(1,3),delta_TF(2,3));
+            g2o::SE3Quat edge_seq(delta_q,delta_trans);
+
+            Eigen::DiagonalMatrix<double, 6> informationMatrix;
+            informationMatrix.diagonal()<<0.01, 0.01, 0.01, 1/pow(deg2rad(1),2), 1/pow(deg2rad(1),2), 1/pow(deg2rad(1),2);
+
+            g2o::EdgeSE3* e_se3 = new g2o::EdgeSE3;
+            e_se3->setVertex(0,dynamic_cast<g2o::OptimizableGraph::Vertex*>(optimizer->vertex(i-1)));
+            e_se3->setVertex(1,dynamic_cast<g2o::OptimizableGraph::Vertex*>(optimizer->vertex(i)));
+            e_se3->setMeasurement(edge_seq);
+            e_se3->setInformation(informationMatrix);
+            optimizer->addEdge(e_se3);
+        }
+    }
+
+    for (auto e = 0; e < edge_measurement.size(); e++)
+    {
+        const int from_idx = get<0>(edge_measurement[e]);
+        const int to_idx = get<1>(edge_measurement[e]);
+        const Eigen::Matrix4d diff_TF = get<2>(edge_measurement[e]);
+
+        Eigen::Matrix3d edge_R = diff_TF.block(0,0,3,3);
+        Eigen::Quaterniond edge_q(edge_R);
+        Eigen::Vector3d edge_trans(diff_TF(0,3),diff_TF(1,3),diff_TF(2,3));
+        g2o::SE3Quat EdgePose(edge_q,edge_trans);
+        Eigen::DiagonalMatrix<double, 6> informationMatrix;
+        informationMatrix.diagonal()<<0.01, 0.01, 0.01, 1/pow(deg2rad(1),2), 1/pow(deg2rad(1),2), 1/pow(deg2rad(1),2);
+
+        g2o::EdgeSE3* e_se3 = new g2o::EdgeSE3;
+        e_se3->setVertex(0,dynamic_cast<g2o::OptimizableGraph::Vertex*>(optimizer->vertex(from_idx)));
+        e_se3->setVertex(1,dynamic_cast<g2o::OptimizableGraph::Vertex*>(optimizer->vertex(to_idx)));
+        e_se3->setMeasurement(EdgePose);
+        e_se3->setInformation(informationMatrix);
+        optimizer->addEdge(e_se3);
+    }
+
+    optimizer->initializeOptimization();
+    optimizer->computeInitialGuess();
+    optimizer->computeActiveErrors();
+    optimizer->optimize(5);
+
+    ROS_INFO("Optimization Complete.");
+
+    PGO_path.poses.clear();
+    PGO_path.header.frame_id = "/body";
+    PGO_path.header.stamp = ros::Time().fromSec(keyframeTimes.back());
+    for (size_t v = 0; v < keyframePoses.size(); v++)
+    {
+        g2o::VertexSE3 *v_SE3_opt = new g2o::VertexSE3();
+        v_SE3_opt = static_cast<g2o::VertexSE3 *>(optimizer->vertex(v));
+        g2o::SE3Quat v_SE3_quat = v_SE3_opt->estimateAsSE3Quat();
+        Eigen::Matrix4d TF = v_SE3_quat.to_homogeneous_matrix();
+
+        Eigen::Matrix3d Rot = TF.block(0,0,3,3);
+        Eigen::Quaterniond SE3Quat(Rot);
+
+        geometry_msgs::PoseStamped posestamped;
+        posestamped.pose.position.x = TF(0,3);
+        posestamped.pose.position.y = TF(1,3);
+        posestamped.pose.position.z = TF(2,3);
+        posestamped.pose.orientation.w = SE3Quat.w();
+        posestamped.pose.orientation.x = SE3Quat.x();
+        posestamped.pose.orientation.y = SE3Quat.y();
+        posestamped.pose.orientation.z = SE3Quat.z();
+
+        PGO_path.header.stamp = ros::Time().fromSec(keyframeTimes[v]);
+        PGO_path.poses.push_back(posestamped);
+    }
+    optimizer->clear();
+    PubPGO_path.publish(PGO_path);
 }
 
 void process_pg()
@@ -396,7 +521,7 @@ void process_pg()
     }
 }
 
-void process_loam(void)
+void process_edge(void)
 {
     while(1)
     {
@@ -412,12 +537,11 @@ void process_loam(void)
             const Eigen::Matrix4d diff_TF = get<2>(loop_idx_pair);
 
             TicToc t_loam;
-            auto relative_pose_optional = doLOAMVirtualRelative(prev_node_idx, curr_node_idx, diff_TF);
+            auto relative_pose_optional = doNDTVirtualRelative(prev_node_idx, curr_node_idx, diff_TF);
             printf("loam matching time %f ms ++++++++++\n", t_loam.toc());
             if(relative_pose_optional)
             {
-//                gtsam::Pose3 relative_pose = relative_pose_optional.value();
-//                gtSAMgraph.add(gtsam::BetweenFactor<gtsam::Pose3>(prev_node_idx, curr_node_idx, relative_pose, robustLoopNoise));
+                edge_measurement.push_back(std::tuple<int, int, Eigen::Matrix4d>(prev_node_idx, curr_node_idx, relative_pose_optional.value()));
                 loopLine.header.stamp = ros::Time().fromSec(timeLaserOdometry);
                 geometry_msgs::Point p;
                 p.x = keyframePoses[prev_node_idx].x;    p.y = keyframePoses[prev_node_idx].y;    p.z = keyframePoses[prev_node_idx].z;
@@ -434,7 +558,25 @@ void process_loam(void)
         std::chrono::milliseconds dura(2);
         std::this_thread::sleep_for(dura);
     }
-} // process_loam
+} // process_edge
+
+void process_optimization(void)
+{
+    float hz = 1;
+    ros::Rate rate(hz);
+    while (ros::ok())
+    {
+        rate.sleep();
+        if(isNowKeyFrame == true)
+        {
+            TicToc t_opt;
+            mPG.lock();
+            runG2Oopt();
+            mPG.unlock();
+            printf("pose graph optimization time %f ms ++++++++++\n", t_opt.toc());
+        }
+    }
+}
 
 int main(int argc, char **argv)
 {
@@ -471,6 +613,8 @@ int main(int argc, char **argv)
 
     ros::Subscriber subFrame = nh.subscribe<pd_loam::frame>("/mapping/frame", 100, FrameHandler);
 
+    PubPGO_path = nh.advertise<nav_msgs::Path>("/posegraph/PGO_path", 100);
+
     PubKeyFrameMarker = nh.advertise<visualization_msgs::MarkerArray>("/posegraph/KF",100);
 
     PubLoopLineMarker = nh.advertise<visualization_msgs::Marker>("/posegraph/loopLine", 100);
@@ -481,7 +625,8 @@ int main(int argc, char **argv)
 #endif
 
     std::thread posegraph {process_pg}; // pose graph construction
-    std::thread edge_calculation {process_loam};    //PD-LOAM based edge measurement calculation
+    std::thread edge_calculation {process_edge};    //NDT based edge measurement calculation
+    std::thread graph_optimization {process_optimization};
     ros::spin();
 
     return 0;
