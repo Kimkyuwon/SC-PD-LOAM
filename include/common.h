@@ -55,7 +55,33 @@ inline double deg2rad(double degrees)
   return degrees * M_PI / 180.0;
 }
 
+Eigen::Vector3f pi2pi(Eigen::Vector3f degree)
+{
+    for (int i = 0; i < 3; i++)
+    {
+        if (degree(i) > 180)  degree(i) -= 360;
+        else if (degree(i) < -180)    degree(i) += 360;
+    }
+    return degree;
+}
 
+Eigen::Vector3f pi2piRad(Eigen::Vector3f radian)
+{
+    for (int i = 0; i < 3; i++)
+    {
+        if (radian(i) > M_PI)  radian(i) -= 2 * M_PI;
+        else if (radian(i) < -M_PI)    radian(i) += 2 * M_PI;
+    }
+    return radian;
+}
+
+double pi2piRad(double radian)
+{
+    if (radian > M_PI)  radian -= 2 * M_PI;
+    else if (radian < -M_PI)    radian += 2 * M_PI;
+
+    return radian;
+}
 // Function to find mean.
 Eigen::Vector3d getMean(pcl::PointCloud<PointType> points)
 {

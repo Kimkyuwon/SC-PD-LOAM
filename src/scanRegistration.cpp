@@ -34,7 +34,7 @@
 // ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 // POSSIBILITY OF SUCH DAMAGE.
 
-#define DEBUG_MODE_FEATURE 0
+#define DEBUG_MODE_FEATURE 1
 
 #include <cmath>
 #include <vector>
@@ -44,6 +44,7 @@
 #include <nav_msgs/Odometry.h>
 #include <opencv/cv.h>
 #include <pcl_conversions/pcl_conversions.h>
+#include <pcl/common/transforms.h>
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
 #include <pcl/filters/voxel_grid.h>
@@ -55,10 +56,13 @@
 #include <ros/ros.h>
 #include <sensor_msgs/Imu.h>
 #include <sensor_msgs/PointCloud2.h>
+#include <novatel_gps_msgs/Inspvax.h>
 #include <std_msgs/Float32.h>
 #include <visualization_msgs/MarkerArray.h>
 #include <tf/transform_datatypes.h>
 #include <tf/transform_broadcaster.h>
+#include <jsk_rviz_plugins/OverlayText.h>
+#include "pd_loam/gnss.h"
 
 using std::atan2;
 using std::cos;
@@ -81,21 +85,30 @@ int cloudOcclusion[200000];
 float cloudAlphaAngle[200000];
 int SharpEdgeNum, LessSharpEdgeNum, FlatSurfNum, LessFlatSurfNum;
 
+Eigen::Vector3d llh, xyz_origin, enu;
+Eigen::Vector3f rpy, velo, bodyVelo, pos_std, rpy_std, velo_std, rpy_prev, rpy_inc;
+std::string gnssStatus, insStatus;
+double gnssTime;
 double clustering_size = 0;
 pcl::PointCloud<pcl::PointXYZINormal> Cluster_points;
 
 int FrameNum = 0;
 double ProcessTimeMean = 0;
+double GNSS_dt, GNSS_prevTime;
 
 bool comp (int i,int j) { return (cloudCurvature[i]<cloudCurvature[j]); }
 
+ros::Publisher pubLaserCloudIn;
 ros::Publisher pubLaserCloud;
 ros::Publisher pubCornerPointsSharp;
 ros::Publisher pubSurfPointsFlat;
 ros::Publisher pubRemovePoints;
 ros::Publisher pubClusterPoints;
+ros::Publisher pubGNSS;
 ros::Publisher pubProcessTime;
+ros::Publisher pubgnssText;
 std::vector<ros::Publisher> pubEachScan;
+jsk_rviz_plugins::OverlayText textMsg;
 
 bool PUB_EACH_LINE = false;
 
@@ -290,22 +303,48 @@ void clusteringSurfPointCloud(const pcl::PointCloud<PointType> &surfPointsLessFl
     }
 }
 
+void gnssHandler(const novatel_gps_msgs::InspvaxConstPtr &gnssMsg)
+{
+    gnssTime = gnssMsg->header.stamp.toSec();
+    gnssStatus = gnssMsg->position_type;
+    insStatus = gnssMsg->ins_status;
+    llh(0) = gnssMsg->latitude; llh(1) = gnssMsg->longitude;    llh(2) = gnssMsg->altitude;
+    rpy(0) = gnssMsg->roll; rpy(1) = gnssMsg->pitch;    rpy(2) = 90-gnssMsg->azimuth;
+    rpy = pi2pi(rpy);
+    velo(0) = gnssMsg->east_velocity;   velo(1) = gnssMsg->north_velocity;  velo(2) = gnssMsg->up_velocity;
+    pos_std(0) = gnssMsg->latitude_std; pos_std(1) = gnssMsg->longitude_std;    pos_std(2) = gnssMsg->altitude_std;
+    rpy_std(0) = gnssMsg->roll_std; rpy_std(1) = gnssMsg->pitch_std;    rpy_std(2) = gnssMsg->azimuth_std;
+    velo_std(0) = gnssMsg->east_velocity_std; velo_std(1) = gnssMsg->north_velocity_std;    velo_std(2) = gnssMsg->up_velocity_std;
+
+    Eigen::Matrix3f rotation;
+    rotation = Eigen::AngleAxisf(deg2rad(rpy(0)), Eigen::Vector3f::UnitX())
+             * Eigen::AngleAxisf(-deg2rad(rpy(1)), Eigen::Vector3f::UnitY())
+             * Eigen::AngleAxisf(deg2rad(rpy(2))/* + M_PI/2*/, Eigen::Vector3f::UnitZ());
+    bodyVelo = rotation.inverse() * velo;
+    if (systemInited == true)
+    {
+        Eigen::Vector3d xyz = llh2xyz(llh);
+        enu = xyz2enu(xyz, xyz_origin);
+    }
+}
+
 void laserCloudHandler(const sensor_msgs::PointCloud2ConstPtr &laserCloudMsg)
 {
-    if (!systemInited)
+    if (!systemInited && (gnssStatus == "INS_RTKFLOAT" || gnssStatus == "INS_RTKFIXED" || gnssStatus == "INS_PSRDIFF") && insStatus == "INS_SOLUTION_GOOD")
     {
-        systemInitCount++;
-        if (systemInitCount >= systemDelay)
-        {
-            systemInited = true;
-        }
-        else
-            return;
+        std::cout<<"system start."<<std::endl;
+        xyz_origin = llh2xyz(llh);
+        rpy_prev = rpy;
+        GNSS_prevTime = gnssTime;
+        systemInited = true;
     }
+    else if (!systemInited)    return;
 
     TicToc t_whole;
-    TicToc t_feature;
-    TicToc t_prepare;
+    GNSS_dt = gnssTime - GNSS_prevTime;
+    GNSS_prevTime = gnssTime;
+    rpy_inc = pi2pi(rpy - rpy_prev);
+    rpy_prev = rpy;
     std::vector<int> scanStartInd(N_SCANS, 0);
     std::vector<int> scanEndInd(N_SCANS, 0);
     std::vector<float> alphaAngle(N_SCANS, 0);
@@ -430,6 +469,22 @@ void laserCloudHandler(const sensor_msgs::PointCloud2ConstPtr &laserCloudMsg)
         float relTime = (ori - startOri) / (endOri - startOri);
         point._PointXYZINormal::curvature = scanID + scanPeriod * relTime;
         point._PointXYZINormal::normal_x = ori;
+        double scale = (point._PointXYZINormal::curvature - int(point._PointXYZINormal::curvature)) / scanPeriod;
+        if (scale > 1)
+        {
+            scale -= int(scale);
+        }
+        Eigen::Vector3f linearInc = bodyVelo * scanPeriod * scale;
+        Eigen::Vector3f angInc = rpy_inc * scale;
+        Eigen::Matrix3f R;
+        R = Eigen::AngleAxisf(deg2rad(angInc(0)), Eigen::Vector3f::UnitX())
+          * Eigen::AngleAxisf(-deg2rad(angInc(1)), Eigen::Vector3f::UnitY())
+          * Eigen::AngleAxisf(-deg2rad(angInc(2)), Eigen::Vector3f::UnitZ());
+        pcl::PointXYZ tempPoint;
+        tempPoint.x = R(0,0) * point.x + R(0,1) * point.y + R(0,2) * point.z + linearInc(0);
+        tempPoint.y = R(1,0) * point.x + R(1,1) * point.y + R(1,2) * point.z + linearInc(1);
+        tempPoint.z = R(2,0) * point.x + R(2,1) * point.y + R(2,2) * point.z + linearInc(2);
+        point.x = tempPoint.x;  point.y = tempPoint.y;  point.z = tempPoint.z;
         laserCloudScans[scanID].push_back(point);
     }
     
@@ -445,8 +500,6 @@ void laserCloudHandler(const sensor_msgs::PointCloud2ConstPtr &laserCloudMsg)
         scanEndInd[i] = laserCloud->size() - 6;
         alphaAngle[i] = (endOri - startOri)/laserCloudScans[i].size();
     }
-
-    //printf("prepare time %f \n", t_prepare.toc());
 
     for (int i = 5; i < cloudSize - 5; i++)
     {
@@ -644,13 +697,43 @@ void laserCloudHandler(const sensor_msgs::PointCloud2ConstPtr &laserCloudMsg)
     }
 
 #if DEBUG_MODE_FEATURE == 1
-    printf("feature extraction time %f ms *************\n", t_feature.toc());
+    textMsg.text = "GNSS Status : " + gnssStatus + "\n" + "INS Status : " + insStatus + "\n" +  "GNSS dt : " + std::to_string(GNSS_dt) + "\n" +
+            "Absolute Position : " + std::to_string(llh(0)) + ", " + std::to_string(llh(1)) + ", " + std::to_string(llh(2)) + "\n" +
+            "ENU Position : " + std::to_string(enu(0)) + ", " + std::to_string(enu(1)) + ", " + std::to_string(enu(2)) + "\n" +
+            "Attitude : " + std::to_string(rpy(0)) + ", " + std::to_string(rpy(1)) + ", " + std::to_string(rpy(2)) + "\n" +
+            "Attitude Incremental : " + std::to_string(rpy_inc(0)) + ", " + std::to_string(rpy_inc(1)) + ", " + std::to_string(rpy_inc(2)) + "\n" +
+            "Velocity : " + std::to_string(velo(0)) + ", " + std::to_string(velo(1)) + ", " + std::to_string(velo(2)) + "\n" +
+            "Body Frame Velocity : " + std::to_string(bodyVelo(0)) + ", " + std::to_string(bodyVelo(1)) + ", " + std::to_string(bodyVelo(2)) + "\n" +
+            "Position STD : " + std::to_string(pos_std(0)) + ", " + std::to_string(pos_std(1)) + ", " + std::to_string(pos_std(2)) + "\n" +
+            "Attitude STD : " + std::to_string(rpy_std(0)) + ", " + std::to_string(rpy_std(1)) + ", " + std::to_string(rpy_std(2)) + "\n" +
+            "Velocity STD : " + std::to_string(velo_std(0)) + ", " + std::to_string(velo_std(1)) + ", " + std::to_string(velo_std(2));
+    pubgnssText.publish(textMsg);
 #endif
+
+    pd_loam::gnss gnssMsg;
+    gnssMsg.header.stamp = laserCloudMsg->header.stamp;
+    gnssMsg.gnss_status = gnssStatus;   gnssMsg.ins_status = insStatus; gnssMsg.dt = GNSS_dt;
+    gnssMsg.lat = llh(0);   gnssMsg.lon = llh(1);   gnssMsg.alt = llh(2);
+    gnssMsg.eastPos = enu(0);   gnssMsg.northPos = enu(1);  gnssMsg.upPos = enu(2);
+    gnssMsg.roll = rpy(0);   gnssMsg.pitch = rpy(1);   gnssMsg.azimuth = rpy(2);
+    gnssMsg.roll_inc = rpy_inc(0);  gnssMsg.pitch_inc = rpy_inc(1);  gnssMsg.azi_inc = rpy_inc(2);
+    gnssMsg.east_vel = velo(0);   gnssMsg.north_vel = velo(1);   gnssMsg.up_vel = velo(2);
+    gnssMsg.x_vel = bodyVelo(0);    gnssMsg.y_vel = bodyVelo(1);    gnssMsg.z_vel = bodyVelo(2);
+    gnssMsg.eastPos_std = pos_std(0);   gnssMsg.northPos_std = pos_std(1);   gnssMsg.upPos_std = pos_std(2);
+    gnssMsg.roll_std = rpy_std(0);   gnssMsg.pitch_std = rpy_std(1);   gnssMsg.azi_std = rpy_std(2);
+    gnssMsg.eastVel_std = velo_std(0);   gnssMsg.northVel_std = velo_std(1);   gnssMsg.upVel_std = velo_std(2);
+    pubGNSS.publish(gnssMsg);
 
     Cluster_points.clear();
     clusteringCornerPointCloud(cornerPointsLessSharp);
 
     clusteringSurfPointCloud(surfPointsLessFlat);
+
+    sensor_msgs::PointCloud2 laserCloudInMsg;
+    pcl::toROSMsg(laserCloudIn, laserCloudInMsg);
+    laserCloudInMsg.header.stamp = laserCloudMsg->header.stamp;
+    laserCloudInMsg.header.frame_id = "/body";
+    pubLaserCloudIn.publish(laserCloudInMsg);
 
     sensor_msgs::PointCloud2 laserCloudOutMsg;
     pcl::toROSMsg(*laserCloud, laserCloudOutMsg);
@@ -689,9 +772,6 @@ void laserCloudHandler(const sensor_msgs::PointCloud2ConstPtr &laserCloudMsg)
         }
     }
 
-#if DEBUG_MODE_FEATURE == 1
-    printf("scan registration time %f ms *************\n", t_whole.toc());
-#endif
     if(t_whole.toc() > 100)
         ROS_WARN("scan registration process over 100ms");
 
@@ -748,6 +828,9 @@ int main(int argc, char **argv)
     }
 
     ros::Subscriber subLaserCloud = nh.subscribe<sensor_msgs::PointCloud2>(LidarTopic, 100, laserCloudHandler);
+    ros::Subscriber subGNSSINS = nh.subscribe<novatel_gps_msgs::Inspvax>("/inspvax", 100, gnssHandler);
+
+    pubLaserCloudIn = nh.advertise<sensor_msgs::PointCloud2>("/velodyne_cloud_1", 100);
 
     pubLaserCloud = nh.advertise<sensor_msgs::PointCloud2>("/velodyne_cloud_2", 100);
 
@@ -759,7 +842,11 @@ int main(int argc, char **argv)
 
     pubClusterPoints = nh.advertise<sensor_msgs::PointCloud2>("/feature/laser_feature_cluster_points", 100);
 
+    pubGNSS = nh.advertise<pd_loam::gnss>("/GNSS", 100);
+
     pubProcessTime = nh.advertise<std_msgs::Float32>("/feature_process_time", 100);
+
+    pubgnssText = nh.advertise<jsk_rviz_plugins::OverlayText>("/gnss_text", 100);
 
     if(PUB_EACH_LINE)
     {

@@ -8,26 +8,23 @@ Panels:
         - /Status1
         - /Axes1
         - /Image1
+        - /Feature1
         - /Feature1/Feature Average Time1
-        - /Mapping1
+        - /Odometry1
+        - /Odometry1/Odometry Process Time1
+        - /Mapping1/Local Map Points1
         - /Mapping1/Feature Points1
         - /Mapping1/Mapping Path1
+        - /Mapping1/Path1
+        - /Mapping1/Path2
         - /Mapping1/Mapping Average Time1
-        - /Mapping1/Points Covariance1
-        - /ImuPreIntegration1
-        - /ImuPreIntegration1/Path1
-        - /ImuPreIntegration1/Odometry1
-        - /ImuPreIntegration1/Odometry1/Shape1
+        - /Mapping1/Cost1
         - /PoseGraph1
-        - /PoseGraph1/Path1
-        - /PoseGraph1/Odometry2
-        - /PoseGraph1/Odometry2/Shape1
-        - /PoseGraph1/PointCloud21
-        - /PoseGraph1/Path2
+        - /PoseGraph1/KeyFrame1
         - /TF1/Frames1
         - /TF1/Tree1
-      Splitter Ratio: 0.5058823823928833
-    Tree Height: 1213
+      Splitter Ratio: 0.5382353067398071
+    Tree Height: 557
   - Class: rviz/Selection
     Name: Selection
   - Class: rviz/Tool Properties
@@ -46,7 +43,7 @@ Panels:
     Experimental: false
     Name: Time
     SyncMode: 0
-    SyncSource: Image
+    SyncSource: Local Map Points
   - Class: rviz/Views
     Expanded:
       - /Current View1
@@ -200,18 +197,18 @@ Visualization Manager:
           backround alpha: 0
           border: true
           foreground alpha: 1
-          foreground color: 239; 41; 41
-          height: 100
+          foreground color: 115; 210; 22
+          height: 60
           left: 30
           linewidth: 1
           max color: 255; 0; 0
           max value: 1
           min value: -1
           show caption: true
-          text size: 12
-          top: 180
+          text size: 8
+          top: 100
           update interval: 0.03999999910593033
-          width: 180
+          width: 120
       Enabled: true
       Name: Feature
     - Class: rviz/Group
@@ -229,18 +226,18 @@ Visualization Manager:
           backround alpha: 0
           border: true
           foreground alpha: 1
-          foreground color: 239; 41; 41
-          height: 100
+          foreground color: 115; 210; 22
+          height: 60
           left: 30
           linewidth: 1
           max color: 255; 0; 0
           max value: 1
           min value: -1
           show caption: true
-          text size: 12
-          top: 50
+          text size: 8
+          top: 20
           update interval: 0.03999999910593033
-          width: 180
+          width: 120
         - Alpha: 1
           Buffer Length: 1
           Class: rviz/Path
@@ -296,7 +293,7 @@ Visualization Manager:
           Use Fixed Frame: true
           Use rainbow: true
           Value: false
-        - Alpha: 1
+        - Alpha: 0.800000011920929
           Autocompute Intensity Bounds: true
           Autocompute Value Bounds:
             Max Value: 10
@@ -306,8 +303,8 @@ Visualization Manager:
           Channel Name: intensity
           Class: rviz/PointCloud2
           Color: 138; 226; 52
-          Color Transformer: FlatColor
-          Decay Time: 0
+          Color Transformer: Intensity
+          Decay Time: 60
           Enabled: true
           Invert Rainbow: false
           Max Color: 255; 255; 255
@@ -317,14 +314,14 @@ Visualization Manager:
           Queue Size: 10
           Selectable: true
           Size (Pixels): 3
-          Size (m): 0.05000000074505806
+          Size (m): 0.019999999552965164
           Style: Flat Squares
           Topic: /mapping/velodyne_cloud_registered
           Unreliable: false
           Use Fixed Frame: true
           Use rainbow: true
           Value: true
-        - Alpha: 0.30000001192092896
+        - Alpha: 0.6000000238418579
           Autocompute Intensity Bounds: true
           Autocompute Value Bounds:
             Max Value: 10
@@ -334,8 +331,8 @@ Visualization Manager:
           Channel Name: intensity
           Class: rviz/PointCloud2
           Color: 255; 255; 255
-          Color Transformer: Intensity
-          Decay Time: 60
+          Color Transformer: FlatColor
+          Decay Time: 0
           Enabled: true
           Invert Rainbow: false
           Max Color: 255; 255; 255
@@ -361,7 +358,7 @@ Visualization Manager:
           Head Length: 0.20000000298023224
           Length: 0.30000001192092896
           Line Style: Billboards
-          Line Width: 0.029999999329447746
+          Line Width: 0.05000000074505806
           Name: Mapping Path
           Offset:
             X: 0
@@ -375,133 +372,10 @@ Visualization Manager:
           Topic: /mapping/aft_mapped_path
           Unreliable: false
           Value: true
-        - Buffer length: 100
-          Class: jsk_rviz_plugin/Plotter2D
-          Enabled: true
-          Name: Mapping Average Time
-          Show Value: true
-          Topic: /mapping_process_time
-          Value: true
-          auto color change: false
-          auto scale: true
-          background color: 0; 0; 0
-          backround alpha: 0
-          border: true
-          foreground alpha: 1
-          foreground color: 239; 41; 41
-          height: 100
-          left: 30
-          linewidth: 1
-          max color: 255; 0; 0
-          max value: 1
-          min value: -1
-          show caption: true
-          text size: 12
-          top: 310
-          update interval: 0.03999999910593033
-          width: 180
-        - Class: rviz/MarkerArray
-          Enabled: false
-          Marker Topic: /map_eigen
-          Name: Points Covariance
-          Namespaces:
-            {}
-          Queue Size: 100
-          Value: false
-      Enabled: true
-      Name: Mapping
-    - Class: rviz/Group
-      Displays:
         - Alpha: 1
           Buffer Length: 1
           Class: rviz/Path
-          Color: 138; 226; 52
-          Enabled: true
-          Head Diameter: 0.30000001192092896
-          Head Length: 0.20000000298023224
-          Length: 0.30000001192092896
-          Line Style: Billboards
-          Line Width: 0.019999999552965164
-          Name: Path
-          Offset:
-            X: 0
-            Y: 0
-            Z: 0
-          Pose Color: 255; 85; 255
-          Pose Style: None
-          Radius: 0.029999999329447746
-          Shaft Diameter: 0.10000000149011612
-          Shaft Length: 0.10000000149011612
-          Topic: /imuPreintegration/imu_path
-          Unreliable: false
-          Value: true
-        - Buffer length: 100
-          Class: jsk_rviz_plugin/Plotter2D
-          Enabled: true
-          Name: Imu Process Time
-          Show Value: true
-          Topic: /imu_process_time
-          Value: true
-          auto color change: false
-          auto scale: true
-          background color: 0; 0; 0
-          backround alpha: 0
-          border: true
-          foreground alpha: 1
-          foreground color: 239; 41; 41
-          height: 100
-          left: 30
-          linewidth: 1
-          max color: 255; 0; 0
-          max value: 1
-          min value: -1
-          show caption: true
-          text size: 12
-          top: 440
-          update interval: 0.03999999910593033
-          width: 180
-        - Angle Tolerance: 0.10000000149011612
-          Class: rviz/Odometry
-          Covariance:
-            Orientation:
-              Alpha: 0.5
-              Color: 255; 255; 127
-              Color Style: Unique
-              Frame: Local
-              Offset: 1
-              Scale: 1
-              Value: true
-            Position:
-              Alpha: 0.30000001192092896
-              Color: 204; 51; 204
-              Scale: 1
-              Value: true
-            Value: true
-          Enabled: false
-          Keep: 25
-          Name: Odometry
-          Position Tolerance: 0.10000000149011612
-          Shape:
-            Alpha: 1
-            Axes Length: 0.20000000298023224
-            Axes Radius: 0.05000000074505806
-            Color: 255; 25; 0
-            Head Length: 0.30000001192092896
-            Head Radius: 0.10000000149011612
-            Shaft Length: 1
-            Shaft Radius: 0.05000000074505806
-            Value: Axes
-          Topic: /imuPreintegration/imu_odom
-          Unreliable: false
-          Value: false
-      Enabled: true
-      Name: ImuPreIntegration
-    - Class: rviz/Group
-      Displays:
-        - Alpha: 1
-          Buffer Length: 1
-          Class: rviz/Path
-          Color: 92; 53; 102
+          Color: 25; 255; 0
           Enabled: true
           Head Diameter: 0.30000001192092896
           Head Length: 0.20000000298023224
@@ -518,131 +392,19 @@ Visualization Manager:
           Radius: 0.029999999329447746
           Shaft Diameter: 0.10000000149011612
           Shaft Length: 0.10000000149011612
-          Topic: /posegraph/aft_PG_path
+          Topic: /mapping/GNSS_INS_path
           Unreliable: false
           Value: true
-        - Class: rviz/Marker
-          Enabled: true
-          Marker Topic: /posegraph/loopLine
-          Name: Marker
-          Namespaces:
-            {}
-          Queue Size: 100
-          Value: true
-        - Angle Tolerance: 0.10000000149011612
-          Class: rviz/Odometry
-          Covariance:
-            Orientation:
-              Alpha: 0.5
-              Color: 255; 255; 127
-              Color Style: Unique
-              Frame: Local
-              Offset: 1
-              Scale: 1
-              Value: true
-            Position:
-              Alpha: 0.30000001192092896
-              Color: 204; 51; 204
-              Scale: 1
-              Value: true
-            Value: true
-          Enabled: false
-          Keep: 100
-          Name: Odometry
-          Position Tolerance: 0.10000000149011612
-          Shape:
-            Alpha: 1
-            Axes Length: 1
-            Axes Radius: 0.10000000149011612
-            Color: 255; 25; 0
-            Head Length: 0.30000001192092896
-            Head Radius: 0.10000000149011612
-            Shaft Length: 1
-            Shaft Radius: 0.05000000074505806
-            Value: Arrow
-          Topic: /posegraph/OdomAftPG
-          Unreliable: false
-          Value: false
-        - Angle Tolerance: 0.10000000149011612
-          Class: rviz/Odometry
-          Covariance:
-            Orientation:
-              Alpha: 0.5
-              Color: 255; 255; 127
-              Color Style: Unique
-              Frame: Local
-              Offset: 1
-              Scale: 1
-              Value: true
-            Position:
-              Alpha: 0.30000001192092896
-              Color: 204; 51; 204
-              Scale: 1
-              Value: true
-            Value: true
-          Enabled: true
-          Keep: 25
-          Name: Odometry
-          Position Tolerance: 0.10000000149011612
-          Shape:
-            Alpha: 1
-            Axes Length: 0.20000000298023224
-            Axes Radius: 0.05000000074505806
-            Color: 255; 25; 0
-            Head Length: 0.30000001192092896
-            Head Radius: 0.10000000149011612
-            Shaft Length: 1
-            Shaft Radius: 0.05000000074505806
-            Value: Axes
-          Topic: /posegraph/OdomAftOpt
-          Unreliable: false
-          Value: true
-        - Alpha: 1
-          Autocompute Intensity Bounds: true
-          Autocompute Value Bounds:
-            Max Value: 10
-            Min Value: -10
-            Value: true
-          Axis: Z
-          Channel Name: intensity
-          Class: rviz/PointCloud2
-          Color: 255; 255; 255
-          Color Transformer: FlatColor
-          Decay Time: 0
-          Enabled: true
-          Invert Rainbow: false
-          Max Color: 255; 255; 255
-          Min Color: 0; 0; 0
-          Name: PointCloud2
-          Position Transformer: XYZ
-          Queue Size: 10
-          Selectable: true
-          Size (Pixels): 3
-          Size (m): 0.10000000149011612
-          Style: Flat Squares
-          Topic: /posegraph/aft_PG_map
-          Unreliable: false
-          Use Fixed Frame: true
-          Use rainbow: true
-          Value: true
-        - Class: rviz/MarkerArray
-          Enabled: false
-          Marker Topic: /posegraph/KF
-          Name: MarkerArray
-          Namespaces:
-            {}
-          Queue Size: 100
-          Value: false
         - Alpha: 1
           Buffer Length: 1
           Class: rviz/Path
-          Color: 12; 255; 208
+          Color: 239; 41; 41
           Enabled: true
           Head Diameter: 0.30000001192092896
           Head Length: 0.20000000298023224
           Length: 0.30000001192092896
           Line Style: Billboards
-          Line Width: 0.10000000149011612
+          Line Width: 0.05000000074505806
           Name: Path
           Offset:
             X: 0
@@ -653,8 +415,85 @@ Visualization Manager:
           Radius: 0.029999999329447746
           Shaft Diameter: 0.10000000149011612
           Shaft Length: 0.10000000149011612
-          Topic: /posegraph/aft_opt_path
+          Topic: /mapping/KF_path
           Unreliable: false
+          Value: true
+        - Buffer length: 100
+          Class: jsk_rviz_plugin/Plotter2D
+          Enabled: true
+          Name: Mapping Average Time
+          Show Value: true
+          Topic: /mapping_process_time
+          Value: true
+          auto color change: false
+          auto scale: true
+          background color: 0; 0; 0
+          backround alpha: 0
+          border: true
+          foreground alpha: 1
+          foreground color: 115; 210; 22
+          height: 60
+          left: 30
+          linewidth: 1
+          max color: 255; 0; 0
+          max value: 1
+          min value: -1
+          show caption: true
+          text size: 8
+          top: 180
+          update interval: 0.03999999910593033
+          width: 120
+        - Class: jsk_rviz_plugin/LinearGauge
+          Enabled: true
+          Name: Cost
+          Show Value: true
+          Topic: /cost
+          Value: true
+          Vertical Gauge: false
+          auto color change: false
+          background color: 0; 0; 0
+          backround alpha: 0
+          border: true
+          foreground alpha: 1
+          foreground color: 115; 210; 22
+          height: 25
+          left: 30
+          linewidth: 1
+          max color: 255; 0; 0
+          max value: 0.05000000074505806
+          min value: 0
+          show caption: true
+          text size: 16
+          top: 280
+          update interval: 0.03999999910593033
+          width: 120
+        - Class: rviz/MarkerArray
+          Enabled: false
+          Marker Topic: /map_eigen
+          Name: Points Covariance
+          Namespaces:
+            {}
+          Queue Size: 100
+          Value: false
+      Enabled: true
+      Name: Mapping
+    - Class: rviz/Group
+      Displays:
+        - Class: rviz/MarkerArray
+          Enabled: true
+          Marker Topic: /posegraph/KF
+          Name: KeyFrame
+          Namespaces:
+            "": true
+          Queue Size: 100
+          Value: true
+        - Class: rviz/Marker
+          Enabled: true
+          Marker Topic: /posegraph/loopLine
+          Name: LoopLine
+          Namespaces:
+            {}
+          Queue Size: 100
           Value: true
       Enabled: true
       Name: PoseGraph
@@ -663,109 +502,50 @@ Visualization Manager:
       Frame Timeout: 100
       Frames:
         All Enabled: true
-        aft_mapped:
+        GNSS_INS:
           Value: true
-        aft_opt:
+        KF:
+          Value: true
+        aft_mapped:
           Value: true
         body:
           Value: true
-      Marker Scale: 1
+      Marker Scale: 3
       Name: TF
       Show Arrows: false
       Show Axes: true
       Show Names: true
       Tree:
         body:
-          aft_mapped:
+          GNSS_INS:
             {}
-          aft_opt:
+          KF:
+            {}
+          aft_mapped:
             {}
       Update Interval: 0
       Value: true
-    - Alpha: 1
-      Autocompute Intensity Bounds: true
-      Autocompute Value Bounds:
-        Max Value: 10
-        Min Value: -10
-        Value: true
-      Axis: Z
-      Channel Name: intensity
-      Class: rviz/PointCloud2
-      Color: 78; 154; 6
-      Color Transformer: FlatColor
-      Decay Time: 0
+    - Align Bottom: false
+      Background Alpha: 0.5
+      Background Color: 186; 189; 182
+      Class: jsk_rviz_plugin/OverlayText
       Enabled: true
-      Invert Rainbow: false
-      Max Color: 255; 255; 255
-      Min Color: 0; 0; 0
-      Name: PointCloud2
-      Position Transformer: XYZ
-      Queue Size: 10
-      Selectable: true
-      Size (Pixels): 3
-      Size (m): 0.10000000149011612
-      Style: Flat Squares
-      Topic: /loop_current
-      Unreliable: false
-      Use Fixed Frame: true
-      Use rainbow: true
+      Foreground Alpha: 0.800000011920929
+      Foreground Color: 238; 238; 236
+      Invert Shadow: false
+      Name: OverlayText
+      Overtake BG Color Properties: true
+      Overtake FG Color Properties: true
+      Overtake Position Properties: true
+      Topic: /gnss_text
       Value: true
-    - Alpha: 1
-      Autocompute Intensity Bounds: true
-      Autocompute Value Bounds:
-        Max Value: 10
-        Min Value: -10
-        Value: true
-      Axis: Z
-      Channel Name: intensity
-      Class: rviz/PointCloud2
-      Color: 239; 41; 41
-      Color Transformer: FlatColor
-      Decay Time: 0
-      Enabled: true
-      Invert Rainbow: false
-      Max Color: 255; 255; 255
-      Min Color: 0; 0; 0
-      Name: PointCloud2
-      Position Transformer: XYZ
-      Queue Size: 10
-      Selectable: true
-      Size (Pixels): 3
-      Size (m): 0.10000000149011612
-      Style: Flat Squares
-      Topic: /loop_loam
-      Unreliable: false
-      Use Fixed Frame: true
-      Use rainbow: true
-      Value: true
-    - Alpha: 1
-      Autocompute Intensity Bounds: true
-      Autocompute Value Bounds:
-        Max Value: 10
-        Min Value: -10
-        Value: true
-      Axis: Z
-      Channel Name: intensity
-      Class: rviz/PointCloud2
-      Color: 52; 101; 164
-      Color Transformer: FlatColor
-      Decay Time: 0
-      Enabled: true
-      Invert Rainbow: false
-      Max Color: 255; 255; 255
-      Min Color: 0; 0; 0
-      Name: PointCloud2
-      Position Transformer: XYZ
-      Queue Size: 10
-      Selectable: true
-      Size (Pixels): 3
-      Size (m): 0.10000000149011612
-      Style: Flat Squares
-      Topic: /loop_target
-      Unreliable: false
-      Use Fixed Frame: true
-      Use rainbow: true
-      Value: true
+      font: Ubuntu
+      height: 200
+      left: 1100
+      line width: 2
+      text size: 10
+      top: 20
+      width: 400
   Enabled: true
   Global Options:
     Background Color: 0; 0; 0
@@ -793,31 +573,36 @@ Visualization Manager:
   Value: true
   Views:
     Current:
-      Angle: 0
-      Class: rviz/TopDownOrtho
+      Class: rviz/ThirdPersonFollower
+      Distance: 11.467370986938477
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
         Swap Stereo Eyes: false
         Value: false
+      Focal Point:
+        X: 0.0340423583984375
+        Y: 0.021854400634765625
+        Z: 0.003908395767211914
+      Focal Shape Fixed Size: true
+      Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Scale: 22.106815338134766
-      Target Frame: aft_mapped
-      Value: TopDownOrtho (rviz)
-      X: 1.5257058143615723
-      Y: -8.018901824951172
+      Pitch: 0.2647970914840698
+      Target Frame: KF
+      Value: ThirdPersonFollower (rviz)
+      Yaw: 3.117204427719116
     Saved: ~
 Window Geometry:
   Displays:
     collapsed: false
-  Height: 1960
+  Height: 1025
   Hide Left Dock: false
-  Hide Right Dock: false
+  Hide Right Dock: true
   Image:
     collapsed: false
-  QMainWindow State: 000000ff00000000fd0000000400000000000001560000070ffc020000000cfb0000001200530065006c0065006300740069006f006e00000001e10000009b0000005c00fffffffb0000001e0054006f006f006c002000500072006f007000650072007400690065007302000001ed000001df00000185000000a3fb000000120056006900650077007300200054006f006f02000001df000002110000018500000122fb000000200054006f006f006c002000500072006f0070006500720074006900650073003203000002880000011d000002210000017afb000000100044006900730070006c006100790073010000003d00000548000000c900fffffffb0000002000730065006c0065006300740069006f006e00200062007500660066006500720200000138000000aa0000023a00000294fb00000014005700690064006500530074006500720065006f02000000e6000000d2000003ee0000030bfb0000000c004b0069006e0065006300740200000186000001060000030c00000261fb0000000a0049006d006100670065010000058b000001c10000001600fffffffb0000001200700067006f00200056006900650077007300000002db000000d7000000a400fffffffb0000000a0049006d00610067006501000002f20000012b0000000000000000fb0000000c00430061006d0065007200610000000347000000ce000000000000000000000001000001e50000070ffc0200000004fb0000000a0049006d006100670065010000003d000003580000000000000000fb0000001e0054006f006f006c002000500072006f00700065007200740069006500730100000041000000780000000000000000fb0000000a00560069006500770073010000003d0000070f000000a400fffffffb0000001200530065006c0065006300740069006f006e010000025a000000b200000000000000000000000200000490000000a9fc0100000001fb0000000a00560069006500770073020000004e00000080000002e1000001970000000300000ebd00000039fc0100000002fc0000000000000ebd000002eb00fffffffa000000010200000002fb0000000a005600690065007700730100000000ffffffff0000000000000000fb0000000800540069006d0065010000041b000000410000003900fffffffb0000000800540069006d0065010000000000000450000000000000000000000b760000070f00000004000000040000000800000008fc0000000100000002000000010000000a0054006f006f006c00730100000000ffffffff0000000000000000
+  QMainWindow State: 000000ff00000000fd000000040000000000000156000003a7fc020000000cfb0000001200530065006c0065006300740069006f006e00000001e10000009b0000005c00fffffffb0000001e0054006f006f006c002000500072006f007000650072007400690065007302000001ed000001df00000185000000a3fb000000120056006900650077007300200054006f006f02000001df000002110000018500000122fb000000200054006f006f006c002000500072006f0070006500720074006900650073003203000002880000011d000002210000017afb000000100044006900730070006c006100790073010000003d000002b8000000c900fffffffb0000002000730065006c0065006300740069006f006e00200062007500660066006500720200000138000000aa0000023a00000294fb00000014005700690064006500530074006500720065006f02000000e6000000d2000003ee0000030bfb0000000c004b0069006e0065006300740200000186000001060000030c00000261fb0000000a0049006d00610067006501000002fb000000e90000001600fffffffb0000001200700067006f00200056006900650077007300000002db000000d7000000a400fffffffb0000000a0049006d00610067006501000002f20000012b0000000000000000fb0000000c00430061006d0065007200610000000347000000ce00000000000000000000000100000100000003a7fc0200000004fb0000000a0049006d006100670065010000003d000003580000000000000000fb0000001e0054006f006f006c002000500072006f00700065007200740069006500730100000041000000780000000000000000fb0000000a00560069006500770073000000003d000003a7000000a400fffffffb0000001200530065006c0065006300740069006f006e010000025a000000b200000000000000000000000200000490000000a9fc0100000001fb0000000a00560069006500770073020000004e00000080000002e100000197000000030000073d00000039fc0100000002fc000000000000073d0000000000fffffffa000000000200000002fb0000000a005600690065007700730100000000ffffffff0000000000000000fb0000000800540069006d0065000000041b000000410000003900fffffffb0000000800540069006d00650100000000000004500000000000000000000005e1000003a700000004000000040000000800000008fc0000000100000002000000010000000a0054006f006f006c00730100000000ffffffff0000000000000000
   Selection:
     collapsed: false
   Time:
@@ -826,7 +611,7 @@ Window Geometry:
     collapsed: false
   Views:
     collapsed: false
-  Width: 3773
+  Width: 1853
   X: 67
   Y: 27
   pgo Views:

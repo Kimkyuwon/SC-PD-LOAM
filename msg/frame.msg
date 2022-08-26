@@ -4,4 +4,5 @@ sensor_msgs/PointCloud2 CornerPC
 sensor_msgs/PointCloud2 SurfPC
 nav_msgs/Odometry pose
 nav_msgs/Odometry increment
+gnss GNSS
 int32 frame_idx

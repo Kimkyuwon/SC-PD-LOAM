@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.0.2)
 project(pd_loam)
 
 set(CMAKE_BUILD_TYPE "Release")
-# set(CMAKE_CXX_FLAGS "-std=c++11")
+set(CMAKE_CXX_FLAGS "-std=c++11")
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_FLAGS_RELEASE "-O3 -Wall -g")
 
@@ -18,15 +18,32 @@ find_package(catkin REQUIRED COMPONENTS
   image_transport
   cv_bridge
   tf
+  ndt_omp
 )
 
-#find_package(Eigen3 REQUIRED)
+find_package(Eigen3 REQUIRED)
 find_package(PCL REQUIRED)
 find_package(OpenCV REQUIRED)
 find_package(Ceres REQUIRED)
+find_package(ndt_omp REQUIRED)
 
 find_package(OpenMP REQUIRED)
-find_package(GTSAM REQUIRED QUIET)
+find_package(GTSAM REQUIRED)
+find_package(g2o REQUIRED
+COMPONENTS
+g2o::core
+g2o::types_slam3d
+g2o::solver_eigen
+g2o::solver_csparse
+g2o::solver_cholmod
+g2o::stuff
+g2o::csparse_extension
+)
+
+if (OPENMP_FOUND)
+    set (CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${OpenMP_C_FLAGS}")
+    set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${OpenMP_CXX_FLAGS}")
+endif()
 
 include_directories(
   include
@@ -40,6 +57,7 @@ include_directories(
 add_message_files(
 FILES
 frame.msg
+gnss.msg
 )
 
 generate_messages(
@@ -63,27 +81,22 @@ add_executable(laserOdometry src/laserOdometry.cpp)
 target_link_libraries(laserOdometry ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${CERES_LIBRARIES})
 
 add_executable(laserMapping src/laserMapping.cpp)
-target_link_libraries(laserMapping ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${CERES_LIBRARIES} ${OpenMP_CXX_FLAGS} gtsam)
+target_link_libraries(laserMapping ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${CERES_LIBRARIES} ${OpenMP_CXX_FLAGS}
+    ${GTSAM_LIBRARIES})
 add_dependencies(laserMapping ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
-
-add_executable(imuPreIntegration src/imuPreIntegration.cpp)
-target_link_libraries(imuPreIntegration ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${CERES_LIBRARIES} gtsam)
-
-add_executable(imuPreIntegration_kitti src/imuPreIntegration_kitti.cpp)
-target_link_libraries(imuPreIntegration_kitti ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${CERES_LIBRARIES} gtsam)
 
 add_executable(mapVisualization src/mapVisualization.cpp)
 target_link_libraries(mapVisualization ${catkin_LIBRARIES} ${PCL_LIBRARIES})
 add_dependencies(mapVisualization ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 
-add_executable(laserPG
-    src/laserPoseGraph.cpp
-    include/scancontext/Scancontext.cpp)
-#target_compile_options(${PROJECT_NAME}_laserPG
-#  PRIVATE ${OpenMP_CXX_FLAGS}
-#)
-target_link_libraries(laserPG
- ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${CERES_LIBRARIES}
+add_executable(laserPGO src/laserPGO.cpp)
+target_link_libraries(laserPGO ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${CERES_LIBRARIES}
   ${OpenMP_CXX_FLAGS}
-  gtsam)
-add_dependencies(laserPG ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
+  g2o::core
+  g2o::types_slam3d
+  g2o::solver_eigen
+  g2o::solver_csparse
+  g2o::solver_cholmod
+  g2o::stuff
+  g2o::csparse_extension)
+add_dependencies(laserPGO ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})

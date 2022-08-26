@@ -36,8 +36,15 @@
 
 #define DEBUG_MODE_MAPPING 0
 
+#include <fstream>
 #include <math.h>
 #include <vector>
+#include <mutex>
+#include <queue>
+#include <thread>
+#include <iostream>
+#include <string>
+#include <optional>
 #include <nav_msgs/Odometry.h>
 #include <nav_msgs/Path.h>
 #include <geometry_msgs/PoseStamped.h>
@@ -72,6 +79,7 @@
 #include "tic_toc.h"
 
 #include "pd_loam/frame.h"
+#include "pd_loam/gnss.h"
 
 int frameCount = 0;
 double ProcessTimeMean = 0;
@@ -81,6 +89,7 @@ double timeLaserCloudCornerLast = 0;
 double timeLaserCloudSurfLast = 0;
 double timeLaserCloudFullRes = 0;
 double timeLaserOdometry = 0;
+double timeGNSS = 0;
 
 bool initSequence = false;
 
@@ -118,6 +127,8 @@ pcl::KdTreeFLANN<PointType>::Ptr kdtreeSurfFromMap(new pcl::KdTreeFLANN<PointTyp
 pcl::KdTreeFLANN<PointType>::Ptr kdtreeCornerMap(new pcl::KdTreeFLANN<PointType>());
 pcl::KdTreeFLANN<PointType>::Ptr kdtreeSurfMap(new pcl::KdTreeFLANN<PointType>());
 
+pd_loam::gnss::ConstPtr gnssMsg;
+
 double parameters[7] = {0, 0, 0, 0, 0, 0, 1};
 Eigen::Map<Eigen::Quaterniond> q_w_curr(parameters + 3);
 Eigen::Map<Eigen::Vector3d> t_w_curr(parameters);
@@ -137,6 +148,7 @@ std::queue<sensor_msgs::PointCloud2ConstPtr> cornerLastBuf;
 std::queue<sensor_msgs::PointCloud2ConstPtr> surfLastBuf;
 std::queue<sensor_msgs::PointCloud2ConstPtr> fullResBuf;
 std::queue<nav_msgs::Odometry::ConstPtr> odometryBuf;
+std::queue<pd_loam::gnss::ConstPtr> gnssBuf;
 std::mutex mBuf;
 std::mutex mMapping;
 
@@ -145,14 +157,15 @@ std::vector<float> pointSearchSqDis;
 
 PointType pointOri, pointSel;
 
-ros::Publisher pubLaserCloudFullRes, pubOdomAftMapped, pubLaserAfterMappedPath;
+ros::Publisher pubLaserCloudFullRes, pubOdomAftMapped;
 ros::Publisher pubLaserCloudFullResLocal;
 ros::Publisher pubLaserCloudFeature;
+ros::Publisher pubLaserAfterMappedPath, pubGnssPath, pubKalmanPath;
 ros::Publisher pubFrame;
 ros::Publisher pubEigenMarker;
-ros::Publisher pubProcessTime;
+ros::Publisher pubProcessTime, pubCost;
 
-nav_msgs::Path laserAfterMappedPath, laserAfterOptPath;
+nav_msgs::Path laserAfterMappedPath, gnssEnuPath, KalmanPath;
 
 int marker_id = 1;
 visualization_msgs::MarkerArray eig_marker;
@@ -160,6 +173,14 @@ visualization_msgs::MarkerArray eig_marker;
 pd_loam::frame frameMsg;
 pcl::PointCloud<PointType>::Ptr laserCloudFeatureLocal (new pcl::PointCloud<PointType> ());
 pcl::PointCloud<PointType>::Ptr laserCloudFeatureMap (new pcl::PointCloud<PointType> ());
+
+double final_cost = 100;
+Eigen::VectorXd state(6);
+Eigen::MatrixXd Q(6,6);
+Eigen::MatrixXd H(6,6);
+Eigen::MatrixXd P(6,6);
+Eigen::MatrixXd R(6,6);
+Eigen::MatrixXd K(6,6);
 
 void drawEigenVector(ros::Time time, int type, int marker_id, Eigen::Vector3d mean, Eigen::Matrix3d eigVec, Eigen::Vector3d eigen_value, visualization_msgs::MarkerArray &markerarr)
 {
@@ -358,7 +379,7 @@ void updateMap()
         surfMapCov = surfCov;
     }
     //erase old surf PD map
-    while(laserCloudSurfPDMap->points.size() > 6000)
+    while(laserCloudSurfPDMap->points.size() > 10000)
     {
         laserCloudSurfPDMap->points.erase(laserCloudSurfPDMap->points.begin());
         surfMapCov.erase(surfMapCov.begin());
@@ -390,6 +411,13 @@ void pointAssociateToMap(PointType const *const pi, PointType *const po)
     po->_PointXYZINormal::normal_y = pi->_PointXYZINormal::normal_y;
     po->_PointXYZINormal::normal_z = pi->_PointXYZINormal::normal_z;
 
+}
+
+void gnssHandler(const pd_loam::gnssConstPtr &gnss)
+{
+    mBuf.lock();
+    gnssBuf.push(gnss);
+    mBuf.unlock();
 }
 
 void laserCloudCornerLastHandler(const sensor_msgs::PointCloud2ConstPtr &laserCloudCornerLast2)
@@ -432,7 +460,7 @@ void process()
     while(1)
     {
         while (!cornerLastBuf.empty() && !surfLastBuf.empty() &&
-            !fullResBuf.empty() && !odometryBuf.empty())
+            !fullResBuf.empty() && !odometryBuf.empty() && !gnssBuf.empty())
         {            
             mBuf.lock();
             while (!odometryBuf.empty() && odometryBuf.front()->header.stamp.toSec() < cornerLastBuf.front()->header.stamp.toSec())
@@ -459,14 +487,24 @@ void process()
                 break;
             }
 
+            while (!gnssBuf.empty() && gnssBuf.front()->header.stamp.toSec() < cornerLastBuf.front()->header.stamp.toSec())
+                gnssBuf.pop();
+            if (gnssBuf.empty())
+            {
+                mBuf.unlock();
+                break;
+            }
+
             timeLaserCloudCornerLast = cornerLastBuf.front()->header.stamp.toSec();
             timeLaserCloudSurfLast = surfLastBuf.front()->header.stamp.toSec();
             timeLaserCloudFullRes = fullResBuf.front()->header.stamp.toSec();
             timeLaserOdometry = odometryBuf.front()->header.stamp.toSec();
+            timeGNSS = gnssBuf.front()->header.stamp.toSec();
 
             if (timeLaserCloudCornerLast != timeLaserOdometry ||
                 timeLaserCloudSurfLast != timeLaserOdometry ||
-                timeLaserCloudFullRes != timeLaserOdometry)
+                timeLaserCloudFullRes != timeLaserOdometry ||
+                timeGNSS != timeLaserOdometry)
             {
                 //printf("time corner %f surf %f full %f odom %f \n", timeLaserCloudCornerLast, timeLaserCloudSurfLast, timeLaserCloudFullRes, timeLaserOdometry);
                 //printf("unsync messeage!");
@@ -476,33 +514,34 @@ void process()
 
 
             laserCloudCornerLast->clear();
-
             pcl::fromROSMsg(*cornerLastBuf.front(), *laserCloudCornerLast);
-
             cornerLastBuf.pop();
 
             laserCloudSurfLast->clear();
-
             pcl::fromROSMsg(*surfLastBuf.front(), *laserCloudSurfLast);
-
-
             surfLastBuf.pop();
 
             laserCloudFullRes->clear();
             pcl::fromROSMsg(*fullResBuf.front(), *laserCloudFullRes);
             pcl::VoxelGrid<PointType> downSizeFilter;
             downSizeFilter.setInputCloud(laserCloudFullRes);
-            downSizeFilter.setLeafSize(0.4, 0.4, 0.4);
+            downSizeFilter.setLeafSize(0.2, 0.2, 0.2);
             downSizeFilter.filter(*laserCloudFullRes);
             fullResBuf.pop();
 
-            q_wodom_curr.x() = odometryBuf.front()->pose.pose.orientation.x;
-            q_wodom_curr.y() = odometryBuf.front()->pose.pose.orientation.y;
-            q_wodom_curr.z() = odometryBuf.front()->pose.pose.orientation.z;
-            q_wodom_curr.w() = odometryBuf.front()->pose.pose.orientation.w;
-            t_wodom_curr.x() = odometryBuf.front()->pose.pose.position.x;
-            t_wodom_curr.y() = odometryBuf.front()->pose.pose.position.y;
-            t_wodom_curr.z() = odometryBuf.front()->pose.pose.position.z;
+            gnssMsg = gnssBuf.front();
+            gnssBuf.pop();
+
+            tf::Quaternion q_Inc;
+            q_Inc.setRPY(deg2rad(gnssMsg->roll_inc), deg2rad(gnssMsg->pitch_inc), deg2rad(gnssMsg->azi_inc));
+            q_wodom_curr.w() = q_Inc.w();
+            q_wodom_curr.x() = q_Inc.x();
+            q_wodom_curr.y() = q_Inc.y();
+            q_wodom_curr.z() = q_Inc.z();
+            t_wodom_curr.x() = gnssMsg->x_vel * gnssMsg->dt;
+            t_wodom_curr.y() = gnssMsg->y_vel * gnssMsg->dt;
+            t_wodom_curr.z() = gnssMsg->z_vel * gnssMsg->dt;
+
             odometryBuf.pop();
 
             while(!cornerLastBuf.empty())
@@ -536,11 +575,38 @@ void process()
             // initializing
             if (!initSequence)
             {
+                t_w_curr(0) = gnssMsg->eastPos;
+                t_w_curr(1) = gnssMsg->northPos;
+                t_w_curr(2) = gnssMsg->upPos;
+                t_wmap_wodom = t_w_curr;
+                tf::Quaternion q_GNSS;
+                q_GNSS.setRPY(deg2rad(gnssMsg->roll), deg2rad(gnssMsg->pitch), deg2rad(gnssMsg->azimuth));
+                q_w_curr.w() = q_GNSS.w();
+                q_w_curr.x() = q_GNSS.x();
+                q_w_curr.y() = q_GNSS.y();
+                q_w_curr.z() = q_GNSS.z();
+                q_wmap_wodom = q_w_curr;
+                tf::Quaternion q2;
+                q2.setW(q_w_curr.w());
+                q2.setX(q_w_curr.x());
+                q2.setY(q_w_curr.y());
+                q2.setZ(q_w_curr.z());
+                tf::Matrix3x3 m(q2);
+                // get angles
+                double roll, pitch, yaw;
+                m.getRPY(roll, pitch, yaw);
+                state(0) = t_w_curr(0); state(1) = t_w_curr(1); state(2) = t_w_curr(2);
+                state(3) = roll;    state(4) = pitch;   state(5) = yaw;
                 initSequence = true;
                 ROS_INFO("Mapping initialization finished \n");
             }
             else
             {
+                state(0) += gnssMsg->east_vel*gnssMsg->dt; state(1) += gnssMsg->north_vel*gnssMsg->dt; state(2) += gnssMsg->up_vel*gnssMsg->dt;
+                state(3) += deg2rad(gnssMsg->roll_inc);    state(4) += deg2rad(gnssMsg->pitch_inc);   state(5) += deg2rad(gnssMsg->azi_inc);
+                Q.diagonal()<<pow(gnssMsg->eastVel_std,2),pow(gnssMsg->northVel_std,2),pow(gnssMsg->upVel_std,2),
+                              pow(deg2rad(gnssMsg->roll_std),2),pow(deg2rad(gnssMsg->pitch_std),2),pow(deg2rad(gnssMsg->azi_std),2);
+                P += Q;
                 for (size_t ss = 0; ss < laserCloudCornerPDMap->size(); ss++)
                 {
                     Eigen::Vector3d diffVec;
@@ -722,36 +788,39 @@ void process()
                         options.gradient_check_relative_precision = 1e-4;
                         ceres::Solver::Summary summary;
                         ceres::Solve(options, &problem, &summary);
+                        final_cost = summary.final_cost/(corner_num + surf_num);
                     }
                 }
             }
-            transformUpdate();
-
-            pcl::PointCloud<PointType>::Ptr cornerTemp (new pcl::PointCloud<PointType>());
-            pcl::PointCloud<PointType>::Ptr surfTemp (new pcl::PointCloud<PointType>());
-            for (int i = 0; i < laserCloudCornerStackNum; i++)
+            tf::Quaternion q2;
+            q2.setW(q_w_curr.w());
+            q2.setX(q_w_curr.x());
+            q2.setY(q_w_curr.y());
+            q2.setZ(q_w_curr.z());
+            tf::Matrix3x3 m(q2);
+            // get angles
+            double roll, pitch, yaw;
+            m.getRPY(roll, pitch, yaw);
+            if (final_cost < 0.025)
             {
-                pointAssociateToMap(&laserCloudCornerStack->points[i], &pointSel);
-                cornerTemp->push_back(pointSel);
+                Eigen::MatrixXd HPHTR(6,6);
+                HPHTR = H*P*H.transpose() + R;
+                K = P*H*HPHTR.inverse();
+                Eigen::VectorXd z(6);
+                z(0) = t_w_curr(0); z(1) = t_w_curr(1); z(2) = t_w_curr(2);
+                z(3) = roll;    z(4) = pitch;   z(5) = yaw;
+                Eigen::VectorXd residual(6);
+                residual = z-H*state;
+                residual(5) = pi2piRad(residual(5));
+                state += K*residual;
+                Eigen::MatrixXd I(6,6);
+                I.setIdentity();
+                P = (I - K*H)*P;
             }
-
-            for (int i = 0; i < laserCloudSurfStackNum; i++)
+            else
             {
-                pointAssociateToMap(&laserCloudSurfStack->points[i], &pointSel);
-                surfTemp->push_back(pointSel);
+                ROS_INFO("LOAM result is bad.");
             }
-
-            laserCloudCornerLastPD->clear();
-            cornerCov.clear();
-            laserCloudSurfLastPD->clear();
-            surfCov.clear();
-
-            getCornerProbabilityDistributions(cornerTemp);
-
-            getSurfProbabilityDistributions(surfTemp);
-
-            updateMap();
-            mMapping.unlock();
 
 #if DEBUG_MODE_MAPPING == 1
             for (size_t c = 0; c < cornerMapCov.size(); c++)
@@ -817,6 +886,11 @@ void process()
             float_time.data = (float)ProcessTimeMean;
             pubProcessTime.publish(float_time);
 
+            std_msgs::Float32 float_cost;
+            float_cost.data = (float)final_cost;
+            pubCost.publish(float_cost);
+            final_cost = 100;
+
             nav_msgs::Odometry odomAftMapped;
             odomAftMapped.header.frame_id = "/body";
             odomAftMapped.child_frame_id = "/aft_mapped";
@@ -829,6 +903,66 @@ void process()
             odomAftMapped.pose.pose.position.y = t_w_curr.y();
             odomAftMapped.pose.pose.position.z = t_w_curr.z();
             pubOdomAftMapped.publish(odomAftMapped);
+
+
+            geometry_msgs::PoseStamped laserAfterMappedPose;
+            laserAfterMappedPose.header = odomAftMapped.header;
+            laserAfterMappedPose.pose = odomAftMapped.pose.pose;
+
+            laserAfterMappedPath.header.stamp = odomAftMapped.header.stamp;
+            laserAfterMappedPath.header.frame_id = "/body";
+            laserAfterMappedPath.poses.push_back(laserAfterMappedPose);
+            pubLaserAfterMappedPath.publish(laserAfterMappedPath);
+
+            tf::Transform transform_GNSS;
+            transform_GNSS.setOrigin(tf::Vector3(gnssMsg->eastPos, gnssMsg->northPos, gnssMsg->upPos));
+            tf::Quaternion q_GNSS;
+            q_GNSS.setRPY(deg2rad(gnssMsg->roll), deg2rad(gnssMsg->pitch), deg2rad(gnssMsg->azimuth));
+            geometry_msgs::PoseStamped gnssPose;
+            gnssPose.header.frame_id = "/body";
+            gnssPose.header.stamp = ros::Time().fromSec(timeLaserOdometry);
+            gnssPose.pose.position.x = gnssMsg->eastPos;
+            gnssPose.pose.position.y = gnssMsg->northPos;
+            gnssPose.pose.position.z = gnssMsg->upPos;
+            gnssPose.pose.orientation.w = q_GNSS.w();
+            gnssPose.pose.orientation.x = q_GNSS.x();
+            gnssPose.pose.orientation.y = q_GNSS.y();
+            gnssPose.pose.orientation.z = q_GNSS.z();
+            gnssEnuPath.header.stamp = gnssPose.header.stamp;
+            gnssEnuPath.header.frame_id = "/body";
+            gnssEnuPath.poses.push_back(gnssPose);
+            pubGnssPath.publish(gnssEnuPath);
+
+            tf::Transform transform_KF;
+            transform_KF.setOrigin(tf::Vector3(state(0), state(1), state(2)));
+            tf::Quaternion q_KF;
+            q_KF.setRPY(state(3), state(4), state(5));
+            geometry_msgs::PoseStamped KFPose;
+            KFPose.header.frame_id = "/body";
+            KFPose.header.stamp = ros::Time().fromSec(timeLaserOdometry);
+            KFPose.pose.position.x = state(0);
+            KFPose.pose.position.y = state(1);
+            KFPose.pose.position.z = state(2);
+            KFPose.pose.orientation.w = q_KF.w();
+            KFPose.pose.orientation.x = q_KF.x();
+            KFPose.pose.orientation.y = q_KF.y();
+            KFPose.pose.orientation.z = q_KF.z();
+            KalmanPath.header.stamp = KFPose.header.stamp;
+            KalmanPath.header.frame_id = "/body";
+            KalmanPath.poses.push_back(KFPose);
+            pubKalmanPath.publish(KalmanPath);
+
+            nav_msgs::Odometry odomKF;
+            odomKF.header.frame_id = "/body";
+            odomKF.child_frame_id = "/aft_KF";
+            odomKF.header.stamp = ros::Time().fromSec(timeLaserOdometry);
+            odomKF.pose.pose.orientation.x = q_KF.x();
+            odomKF.pose.pose.orientation.y = q_KF.y();
+            odomKF.pose.pose.orientation.z = q_KF.z();
+            odomKF.pose.pose.orientation.w = q_KF.w();
+            odomKF.pose.pose.position.x = state(0);
+            odomKF.pose.pose.position.y = state(1);
+            odomKF.pose.pose.position.z = state(2);
 
             frameMsg.header.frame_id = "/body";
             frameMsg.header.stamp = ros::Time().fromSec(timeLaserOdometry);
@@ -843,18 +977,11 @@ void process()
             laserSurfMsg.header.stamp = ros::Time().fromSec(timeLaserOdometry);
             laserSurfMsg.header.frame_id = "/body";
             frameMsg.SurfPC = laserSurfMsg;
-            frameMsg.pose = odomAftMapped;
+            frameMsg.pose = odomKF;
+            frameMsg.GNSS = *gnssMsg;
             frameMsg.frame_idx = frameCount;
             pubFrame.publish(frameMsg);
 
-            geometry_msgs::PoseStamped laserAfterMappedPose;
-            laserAfterMappedPose.header = odomAftMapped.header;
-            laserAfterMappedPose.pose = odomAftMapped.pose.pose;
-
-            laserAfterMappedPath.header.stamp = odomAftMapped.header.stamp;
-            laserAfterMappedPath.header.frame_id = "/body";
-            laserAfterMappedPath.poses.push_back(laserAfterMappedPose);
-            pubLaserAfterMappedPath.publish(laserAfterMappedPath);
 
             static tf::TransformBroadcaster br;
             tf::Transform transform;
@@ -869,11 +996,48 @@ void process()
             transform.setRotation(q);
             br.sendTransform(tf::StampedTransform(transform, odomAftMapped.header.stamp, "/body", "/aft_mapped"));
 
+            transform_GNSS.setRotation(q_GNSS);
+            br.sendTransform(tf::StampedTransform(transform_GNSS, ros::Time().fromSec(timeLaserOdometry), "/body", "/GNSS_INS"));
+            transform_KF.setRotation(q_KF);
+            br.sendTransform(tf::StampedTransform(transform_KF, ros::Time().fromSec(timeLaserOdometry), "/body", "/KF"));
 #if DEBUG_MODE_MAPPING == 1
             pubEigenMarker.publish(eig_marker);
             eig_marker.markers.clear();
             marker_id = 1;
 #endif
+            q2.setRPY(deg2rad(gnssMsg->roll), deg2rad(-gnssMsg->pitch), state(5));
+            q_w_curr.w() = q2.w();
+            q_w_curr.x() = q2.x();
+            q_w_curr.y() = q2.y();
+            q_w_curr.z() = q2.z();
+            t_w_curr(0) = state(0); t_w_curr(1) = state(1); t_w_curr(2) = state(2);
+            transformUpdate();
+
+            pcl::PointCloud<PointType>::Ptr cornerTemp (new pcl::PointCloud<PointType>());
+            pcl::PointCloud<PointType>::Ptr surfTemp (new pcl::PointCloud<PointType>());
+            for (int i = 0; i < laserCloudCornerStackNum; i++)
+            {
+                pointAssociateToMap(&laserCloudCornerStack->points[i], &pointSel);
+                cornerTemp->push_back(pointSel);
+            }
+
+            for (int i = 0; i < laserCloudSurfStackNum; i++)
+            {
+                pointAssociateToMap(&laserCloudSurfStack->points[i], &pointSel);
+                surfTemp->push_back(pointSel);
+            }
+
+            laserCloudCornerLastPD->clear();
+            cornerCov.clear();
+            laserCloudSurfLastPD->clear();
+            surfCov.clear();
+
+            getCornerProbabilityDistributions(cornerTemp);
+
+            getSurfProbabilityDistributions(surfTemp);
+
+            updateMap();
+            mMapping.unlock();
             frameCount++;
         }
         std::chrono::milliseconds dura(2);
@@ -886,6 +1050,10 @@ int main(int argc, char **argv)
     ros::init(argc, argv, "laserMapping");
     ros::NodeHandle nh;
 
+    P.diagonal()<<100,100,100,100,100,100;
+    H.diagonal()<<1,1,1,1,1,1;
+    R.diagonal()<<0.01,0.01,0.01,pow(deg2rad(1),2),pow(deg2rad(1),2),pow(deg2rad(1),2);
+    state.setZero();
     nh.param<float>("map_matching_range", mapMatchingRange, 80);
     nh.param<double>("matching_threshold",matchingThres, 4);
 
@@ -899,6 +1067,8 @@ int main(int argc, char **argv)
 
     ros::Subscriber subLaserCloudFeature = nh.subscribe<sensor_msgs::PointCloud2>("/feature/laser_feature_cluster_points", 100, laserCloudFeatureHandler);
 
+    ros::Subscriber subGNSS = nh.subscribe<pd_loam::gnss>("/GNSS", 100, gnssHandler);
+
     pubLaserCloudFullRes = nh.advertise<sensor_msgs::PointCloud2>("/mapping/velodyne_cloud_registered", 100);
 
     pubLaserCloudFullResLocal = nh.advertise<sensor_msgs::PointCloud2>("/mapping/velodyne_cloud_registered_local", 100);
@@ -909,11 +1079,17 @@ int main(int argc, char **argv)
 
     pubLaserAfterMappedPath = nh.advertise<nav_msgs::Path>("/mapping/aft_mapped_path", 100);
 
+    pubGnssPath = nh.advertise<nav_msgs::Path>("/mapping/GNSS_INS_path", 100);
+
+    pubKalmanPath = nh.advertise<nav_msgs::Path>("/mapping/KF_path", 100);
+
     pubEigenMarker = nh.advertise<visualization_msgs::MarkerArray>("/map_eigen", 100);
 
     pubFrame = nh.advertise<pd_loam::frame>("/mapping/frame", 100);
 
     pubProcessTime = nh.advertise<std_msgs::Float32>("/mapping_process_time", 100);
+
+    pubCost = nh.advertise<std_msgs::Float32>("/cost", 100);
    
     std::thread mapping_process{process};
 
