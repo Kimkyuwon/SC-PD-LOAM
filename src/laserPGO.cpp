@@ -87,6 +87,7 @@ gtsam::ISAM2 *isam;
 gtsam::Values isamCurrentEstimate;
 noiseModel::Diagonal::shared_ptr priorNoise;
 noiseModel::Diagonal::shared_ptr odomNoise;
+noiseModel::Diagonal::shared_ptr odomINSNoise;
 noiseModel::Diagonal::shared_ptr gpsNoise;
 noiseModel::Base::shared_ptr robustLoopNoise;
 

@@ -604,7 +604,7 @@ void process()
             {
                 state(0) += gnssMsg->east_vel*gnssMsg->dt; state(1) += gnssMsg->north_vel*gnssMsg->dt; state(2) += gnssMsg->up_vel*gnssMsg->dt;
                 state(3) += deg2rad(gnssMsg->roll_inc);    state(4) += deg2rad(gnssMsg->pitch_inc);   state(5) += deg2rad(gnssMsg->azi_inc);
-                Q.diagonal()<<pow(3*gnssMsg->eastVel_std,2),pow(3*gnssMsg->northVel_std,2),pow(3*gnssMsg->upVel_std,2),
+                Q.diagonal()<<pow(gnssMsg->eastVel_std,2),pow(gnssMsg->northVel_std,2),pow(5*gnssMsg->upVel_std,2),
                               pow(deg2rad(3*gnssMsg->roll_std),2),pow(deg2rad(3*gnssMsg->pitch_std),2),pow(deg2rad(3*gnssMsg->azi_std),2);
                 P += Q;
                 t_w_curr(0) = state(0); t_w_curr(1) = state(1); t_w_curr(2) = state(2);
