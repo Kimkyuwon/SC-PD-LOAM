@@ -14,7 +14,6 @@
 #include <pcl/kdtree/kdtree_flann.h>
 #include <pcl/common/common.h>
 #include <pcl/common/transforms.h>
-#include <pcl/registration/ndt.h>
 #include <pcl/io/pcd_io.h>
 #include <pcl/filters/filter.h>
 #include <pcl/filters/voxel_grid.h>
@@ -35,18 +34,19 @@
 #include <geometry_msgs/PoseStamped.h>
 #include <visualization_msgs/MarkerArray.h>
 
-#include "g2o/core/sparse_optimizer.h"
-#include "g2o/core/optimization_algorithm_levenberg.h"
-#include "g2o/core/block_solver.h"
-
-#include "g2o/solvers/cholmod/linear_solver_cholmod.h"
-
-#include "g2o/types/slam3d/vertex_se3.h"
-#include "g2o/types/slam3d/vertex_pointxyz.h"
-#include "g2o/types/slam3d/edge_se3.h"
-#include "g2o/types/slam3d/edge_se3_pointxyz.h"
-#include "g2o/types/slam3d/se3quat.h"
-#include "g2o/types/slam3d/parameter_se3_offset.h"
+#include <gtsam/inference/Symbol.h>
+#include <gtsam/nonlinear/Values.h>
+#include <gtsam/nonlinear/Marginals.h>
+#include <gtsam/geometry/Rot3.h>
+#include <gtsam/geometry/Pose3.h>
+#include <gtsam/geometry/Rot2.h>
+#include <gtsam/geometry/Pose2.h>
+#include <gtsam/slam/PriorFactor.h>
+#include <gtsam/slam/BetweenFactor.h>
+#include <gtsam/navigation/GPSFactor.h>
+#include <gtsam/nonlinear/NonlinearFactorGraph.h>
+#include <gtsam/nonlinear/LevenbergMarquardtOptimizer.h>
+#include <gtsam/nonlinear/ISAM2.h>
 
 #include <eigen3/Eigen/Dense>
 #include <ceres/ceres.h>
@@ -59,6 +59,10 @@
 
 #define DEBUG_MODE_POSEGRAPH 0
 
+using namespace gtsam;
+
+using gtsam::symbol_shorthand::X; // Pose3 (x,y,z,r,p,y)
+
 std::string ScansDirectory, save_directory;
 
 pcl::PointCloud<PointType>::Ptr laserCloudFullRes(new pcl::PointCloud<PointType>());
@@ -69,7 +73,22 @@ std::vector<Pose6D> keyframePoses;
 std::vector<Pose6D> keyframePosesUpdated;
 std::vector<double> keyframeTimes;
 std::vector<Pose6D> keyFrameIncrements;
-std::vector<std::tuple<int, int, Eigen::Matrix4d>> edge_measurement;
+std::vector<pd_loam::gnss> keyframeGNSS;
+int recentIdxUpdated = 0;
+
+//for pose graph
+gtsam::NonlinearFactorGraph gtSAMgraph;
+bool gtSAMgraphMade = false;
+bool GNSSisGood = false;
+bool isLoopClosed = false;
+int edgeCount = 0;
+gtsam::Values initialEstimate;
+gtsam::ISAM2 *isam;
+gtsam::Values isamCurrentEstimate;
+noiseModel::Diagonal::shared_ptr priorNoise;
+noiseModel::Diagonal::shared_ptr odomNoise;
+noiseModel::Diagonal::shared_ptr gpsNoise;
+noiseModel::Base::shared_ptr robustLoopNoise;
 
 double keyframeMeterGap;
 double keyframeDegGap, keyframeRadGap;
@@ -78,7 +97,6 @@ double rotaionAccumulated = 1000000.0; // large value means must add the first g
 
 bool isNowKeyFrame = false;
 bool poseInitialized = false;
-bool isLoopClosed = false;
 int KeyFrameIdx = 0;
 int PassIdx = 30;
 
@@ -113,6 +131,42 @@ ros::Publisher PubKeyFrameMarker, PubLoopLineMarker;
 ros::Publisher PubLoopCurrent, PubLoopTarget, PubLoopLOAM;
 ros::Publisher PubPGO_path;
 
+void initNoises( void )
+{
+    gtsam::Vector priorNoiseVector6(6);
+    priorNoiseVector6 << 1e-12, 1e-12, 1e-12, 1e-12, 1e-12, 1e-12;
+    priorNoise = noiseModel::Diagonal::Variances(priorNoiseVector6);
+
+    gtsam::Vector odomNoiseVector6(6);
+    odomNoiseVector6 << 1e-6, 1e-6, 1e-6, 1e-4, 1e-4, 1e-4;
+    odomNoise = noiseModel::Diagonal::Variances(odomNoiseVector6);
+
+    double loopNoiseScore = 0.5; // constant is ok...
+    gtsam::Vector robustNoiseVector6(6); // gtsam::Pose3 factor has 6 elements (6D)
+    robustNoiseVector6 << loopNoiseScore, loopNoiseScore, loopNoiseScore, loopNoiseScore, loopNoiseScore, loopNoiseScore;
+    robustLoopNoise = gtsam::noiseModel::Robust::Create(
+                    gtsam::noiseModel::mEstimator::Cauchy::Create(1), // optional: replacing Cauchy by DCS or GemanMcClure is okay but Cauchy is empirically good.
+                    gtsam::noiseModel::Diagonal::Variances(robustNoiseVector6) );
+} // initNoises
+
+Eigen::Affine3f odom2affine(nav_msgs::OdometryConstPtr odom)
+{
+    double x, y, z, roll, pitch, yaw;
+    x = odom->pose.pose.position.x;
+    y = odom->pose.pose.position.y;
+    z = odom->pose.pose.position.z;
+    tf::Quaternion orientation;
+    tf::quaternionMsgToTF(odom->pose.pose.orientation, orientation);
+    tf::Matrix3x3(orientation).getRPY(roll, pitch, yaw);
+    return pcl::getTransformation(x, y, z, roll, pitch, yaw);
+}
+
+gtsam::Pose3 Pose6DtoGTSAMPose3(const Pose6D& p)
+{
+    return gtsam::Pose3( gtsam::Rot3::RzRyRx(p.roll, p.pitch, p.yaw), gtsam::Point3(p.x, p.y, p.z) );
+} // Pose6DtoGTSAMPose3
+
+
 Pose6D getOdom(nav_msgs::Odometry _odom)
 {
     auto tx = _odom.pose.pose.position.x;
@@ -131,7 +185,8 @@ Pose6D diffTransformation(const Pose6D& _p1, const Pose6D& _p2)
     Eigen::Affine3f SE3_p1 = pcl::getTransformation(_p1.x, _p1.y, _p1.z, _p1.roll, _p1.pitch, _p1.yaw);
     Eigen::Affine3f SE3_p2 = pcl::getTransformation(_p2.x, _p2.y, _p2.z, _p2.roll, _p2.pitch, _p2.yaw);
     Eigen::Matrix4f SE3_delta0 = SE3_p1.matrix().inverse() * SE3_p2.matrix();
-    Eigen::Affine3f SE3_delta; SE3_delta.matrix() = SE3_delta0;
+    Eigen::Affine3f SE3_delta;
+    SE3_delta.matrix() = SE3_delta0;
     float dx, dy, dz, droll, dpitch, dyaw;
     pcl::getTranslationAndEulerAngles (SE3_delta, dx, dy, dz, droll, dpitch, dyaw);
     // std::cout << "delta : " << dx << ", " << dy << ", " << dz << ", " << droll << ", " << dpitch << ", " << dyaw << std::endl;
@@ -182,7 +237,7 @@ void FrameHandler(const pd_loam::frameConstPtr &_frame)
 } // FrameHandler
 
 
-std::optional<Eigen::Matrix4d> doNDTVirtualRelative( int _loop_kf_idx, int _curr_kf_idx, Eigen::Matrix4d _diff_TF )
+std::optional<gtsam::Pose3> doNDTVirtualRelative( int _loop_kf_idx, int _curr_kf_idx, Eigen::Matrix4d _diff_TF )
 {
     // parse pointclouds
     pcl::PointCloud<PointType>::Ptr cureKeyframeFeatureCloud(new pcl::PointCloud<PointType>());
@@ -257,10 +312,15 @@ std::optional<Eigen::Matrix4d> doNDTVirtualRelative( int _loop_kf_idx, int _curr
 #endif
 
         // Get pose transformation
-        Eigen::Matrix4d FromTo_TF(Eigen::Matrix4d::Identity());
-        FromTo_TF = result_TF.cast<double>();
+        Eigen::Matrix3d FromTo_R = result_TF.block(0,0,3,3).cast<double>();
+        Eigen::Quaterniond q_FromTo(FromTo_R);
+        // Get pose transformation
+        double roll, pitch, yaw;
+        tf::Matrix3x3(tf::Quaternion(q_FromTo.x(), q_FromTo.y(), q_FromTo.z(), q_FromTo.w())).getRPY(roll, pitch, yaw);
+        gtsam::Pose3 poseFrom = Pose3(Rot3::RzRyRx(roll, pitch, yaw), Point3(result_TF(0,3), result_TF(1,3), result_TF(2,3)));
+        gtsam::Pose3 poseTo = Pose3(Rot3::RzRyRx(0.0, 0.0, 0.0), Point3(0.0, 0.0, 0.0));
 
-        return FromTo_TF;
+        return poseFrom.between(poseTo);
     }
     else
     {
@@ -268,114 +328,55 @@ std::optional<Eigen::Matrix4d> doNDTVirtualRelative( int _loop_kf_idx, int _curr
     }
 }
 
-void runG2Oopt()
+void updatePoses(void)
 {
-    std::unique_ptr<g2o::BlockSolver_6_3::LinearSolverType> linear_solver;
-    linear_solver = g2o::make_unique<g2o::LinearSolverCholmod<g2o::BlockSolver_6_3::PoseMatrixType>>();
-    g2o::OptimizationAlgorithmLevenberg* solver =
-          new g2o::OptimizationAlgorithmLevenberg(g2o::make_unique<g2o::BlockSolver_6_3>(std::move(linear_solver)));
-    g2o::SparseOptimizer* optimizer = new g2o::SparseOptimizer();
-    optimizer->setAlgorithm(solver);
-
-    for (auto i = 0; i < keyframePoses.size(); i++)
-    {
-        Eigen::Matrix3d rotation;
-        rotation = Eigen::AngleAxisd(keyframePoses[i].roll, Eigen::Vector3d::UnitX())
-                 * Eigen::AngleAxisd(keyframePoses[i].pitch, Eigen::Vector3d::UnitY())
-                 * Eigen::AngleAxisd(keyframePoses[i].yaw, Eigen::Vector3d::UnitZ());
-        Eigen::Quaterniond q(rotation);
-        Eigen::Vector3d trans(keyframePoses[i].x,keyframePoses[i].y,keyframePoses[i].z);
-        g2o::SE3Quat CurPose;
-        CurPose.setRotation(q);
-        CurPose.setTranslation(trans);
-
-        g2o::VertexSE3* v_se3 = new g2o::VertexSE3;
-        v_se3->setEstimate(CurPose);
-        v_se3->setId(i);
-
-        if (i == 0)
-        {
-            v_se3->setFixed(true);
-        }
-        optimizer->addVertex(v_se3);
-
-        if (i > 0)
-        {
-            Eigen::Matrix4d from_TF = get_TF_Matrix(keyframePoses[i-1]);
-            Eigen::Matrix4d to_TF = get_TF_Matrix(keyframePoses[i]);
-            Eigen::Matrix4d delta_TF = from_TF.inverse() * to_TF;
-            Eigen::Matrix3d delta_R = delta_TF.block(0,0,3,3);
-            Eigen::Quaterniond delta_q(delta_R);
-            Eigen::Vector3d delta_trans(delta_TF(0,3),delta_TF(1,3),delta_TF(2,3));
-            g2o::SE3Quat edge_seq(delta_q,delta_trans);
-
-            Eigen::DiagonalMatrix<double, 6> informationMatrix;
-            informationMatrix.diagonal()<<0.01, 0.01, 0.01, 1/pow(deg2rad(1),2), 1/pow(deg2rad(1),2), 1/pow(deg2rad(1),2);
-
-            g2o::EdgeSE3* e_se3 = new g2o::EdgeSE3;
-            e_se3->setVertex(0,dynamic_cast<g2o::OptimizableGraph::Vertex*>(optimizer->vertex(i-1)));
-            e_se3->setVertex(1,dynamic_cast<g2o::OptimizableGraph::Vertex*>(optimizer->vertex(i)));
-            e_se3->setMeasurement(edge_seq);
-            e_se3->setInformation(informationMatrix);
-            optimizer->addEdge(e_se3);
-        }
-    }
-
-    for (auto e = 0; e < edge_measurement.size(); e++)
-    {
-        const int from_idx = get<0>(edge_measurement[e]);
-        const int to_idx = get<1>(edge_measurement[e]);
-        const Eigen::Matrix4d diff_TF = get<2>(edge_measurement[e]);
-
-        Eigen::Matrix3d edge_R = diff_TF.block(0,0,3,3);
-        Eigen::Quaterniond edge_q(edge_R);
-        Eigen::Vector3d edge_trans(diff_TF(0,3),diff_TF(1,3),diff_TF(2,3));
-        g2o::SE3Quat EdgePose(edge_q,edge_trans);
-        Eigen::DiagonalMatrix<double, 6> informationMatrix;
-        informationMatrix.diagonal()<<0.01, 0.01, 0.01, 1/pow(deg2rad(1),2), 1/pow(deg2rad(1),2), 1/pow(deg2rad(1),2);
-
-        g2o::EdgeSE3* e_se3 = new g2o::EdgeSE3;
-        e_se3->setVertex(0,dynamic_cast<g2o::OptimizableGraph::Vertex*>(optimizer->vertex(from_idx)));
-        e_se3->setVertex(1,dynamic_cast<g2o::OptimizableGraph::Vertex*>(optimizer->vertex(to_idx)));
-        e_se3->setMeasurement(EdgePose);
-        e_se3->setInformation(informationMatrix);
-        optimizer->addEdge(e_se3);
-    }
-
-    optimizer->initializeOptimization();
-    optimizer->computeInitialGuess();
-    optimizer->computeActiveErrors();
-    optimizer->optimize(5);
-
-    ROS_INFO("Optimization Complete.");
-
+    mKF.lock();
     PGO_path.poses.clear();
-    PGO_path.header.frame_id = "/body";
-    PGO_path.header.stamp = ros::Time().fromSec(keyframeTimes.back());
-    for (size_t v = 0; v < keyframePoses.size(); v++)
+    for (int node_idx=0; node_idx < int(isamCurrentEstimate.size()); node_idx++)
     {
-        g2o::VertexSE3 *v_SE3_opt = new g2o::VertexSE3();
-        v_SE3_opt = static_cast<g2o::VertexSE3 *>(optimizer->vertex(v));
-        g2o::SE3Quat v_SE3_quat = v_SE3_opt->estimateAsSE3Quat();
-        Eigen::Matrix4d TF = v_SE3_quat.to_homogeneous_matrix();
+        Pose6D& p =keyframePosesUpdated[node_idx];
+        p.x = isamCurrentEstimate.at<gtsam::Pose3>(node_idx).translation().x();
+        p.y = isamCurrentEstimate.at<gtsam::Pose3>(node_idx).translation().y();
+        p.z = isamCurrentEstimate.at<gtsam::Pose3>(node_idx).translation().z();
+        p.roll = isamCurrentEstimate.at<gtsam::Pose3>(node_idx).rotation().roll();
+        p.pitch = isamCurrentEstimate.at<gtsam::Pose3>(node_idx).rotation().pitch();
+        p.yaw = isamCurrentEstimate.at<gtsam::Pose3>(node_idx).rotation().yaw();
+        keyframePosesUpdated[node_idx] = p;
+        geometry_msgs::PoseStamped poseStampPGO;
+        poseStampPGO.header.frame_id = "/body";
+        poseStampPGO.pose.position.x = p.x;
+        poseStampPGO.pose.position.y = p.y;
+        poseStampPGO.pose.position.z = p.z;
+        poseStampPGO.pose.orientation = tf::createQuaternionMsgFromRollPitchYaw(p.roll, p.pitch, p.yaw);
 
-        Eigen::Matrix3d Rot = TF.block(0,0,3,3);
-        Eigen::Quaterniond SE3Quat(Rot);
-
-        geometry_msgs::PoseStamped posestamped;
-        posestamped.pose.position.x = TF(0,3);
-        posestamped.pose.position.y = TF(1,3);
-        posestamped.pose.position.z = TF(2,3);
-        posestamped.pose.orientation.w = SE3Quat.w();
-        posestamped.pose.orientation.x = SE3Quat.x();
-        posestamped.pose.orientation.y = SE3Quat.y();
-        posestamped.pose.orientation.z = SE3Quat.z();
-
-        PGO_path.header.stamp = ros::Time().fromSec(keyframeTimes[v]);
-        PGO_path.poses.push_back(posestamped);
+        PGO_path.header.frame_id = "/body";
+        PGO_path.poses.push_back(poseStampPGO);
     }
-    optimizer->clear();
+    PGO_path.header.stamp = ros::Time().fromSec(keyframeTimes.back());
+    PGO_path.header.frame_id = "/body";
     PubPGO_path.publish(PGO_path);
+    isLoopClosed = false;
+    mKF.unlock();
+} // updatePoses
+
+void runISAM2opt(void)
+{
+    // called when a variable added
+    isam->update(gtSAMgraph, initialEstimate);
+    isam->update();
+    if (isLoopClosed == true)
+    {
+        isam->update();
+        isam->update();
+        isam->update();
+        isam->update();
+    }
+    gtSAMgraph.resize(0);
+    initialEstimate.clear();
+
+    isamCurrentEstimate = isam->calculateEstimate();
+    recentIdxUpdated = int(isamCurrentEstimate.size());
+    updatePoses();
 }
 
 void process_pg()
@@ -435,6 +436,7 @@ void process_pg()
                 PubKeyFrameMarker.publish(KF_Markers);
                 translationAccumulated = 0.0; // reset
                 rotaionAccumulated = 0.0; // reset
+                KeyFrameIdx++;
             }
             else
             {
@@ -451,70 +453,119 @@ void process_pg()
             *laserCloudFeature += *laserCloudCorner;
             *laserCloudFeature += *laserCloudSurf;
 
-            pcl::io::savePCDFileBinary(ScansDirectory + std::to_string(KeyFrameIdx) + "_full.pcd", *laserCloudFullRes);
-            pcl::io::savePCDFileBinary(ScansDirectory + std::to_string(KeyFrameIdx) + "_feature.pcd", *laserCloudFeature);
+            pcl::io::savePCDFileBinary(ScansDirectory + std::to_string(keyframePoses.size()) + "_full.pcd", *laserCloudFullRes);
+            pcl::io::savePCDFileBinary(ScansDirectory + std::to_string(keyframePoses.size()) + "_feature.pcd", *laserCloudFeature);
             keyframePoses.push_back(pose_curr);
             keyframePosesUpdated.push_back(pose_curr);
             keyFrameIncrements.push_back(incrementAccumulated);
             keyframeTimes.push_back(timeLaserOdometry);
+            keyframeGNSS.push_back(gnss_curr);
 
             incrementAccumulated.x = 0; incrementAccumulated.y = 0; incrementAccumulated.z = 0;
             incrementAccumulated.roll = 0;  incrementAccumulated.pitch = 0; incrementAccumulated.yaw = 0;
-            KeyFrameIdx++;
 
-            Pose6D To_pose = keyframePoses.back();
-            Eigen::Matrix4d to_TF = get_TF_Matrix(To_pose);
-
-            std::vector<float> LOOP_DIST;
-            std::vector<int> LOOP_IDX;
-            std::vector<Eigen::Matrix4d> FROM_TFs;
-            if (keyframePoses.size() < PassIdx)
+            if (keyframePoses.size() > PassIdx)
             {
-                mKF.unlock();
-                continue;
-            }
+                Pose6D To_pose = keyframePoses.back();
+                Eigen::Matrix4d to_TF = get_TF_Matrix(To_pose);
 
-            for (size_t i = 0; i < keyframePoses.size() - PassIdx; i++)
-            {
-                Pose6D From_pose = keyframePoses[i];
-                Eigen::Matrix4d from_TF = get_TF_Matrix(From_pose);
-
-                float loop_dist = sqrt(pow((to_TF(0,3)-from_TF(0,3)),2)+pow((to_TF(1,3)-from_TF(1,3)),2)+pow((to_TF(2,3)-from_TF(2,3)),2));
-
-                if (loop_dist > 10)  continue;
-                LOOP_DIST.push_back(loop_dist);
-                LOOP_IDX.push_back(i);
-                FROM_TFs.push_back(from_TF);
-            }
-            if (LOOP_DIST.size() > 0)
-            {
-                size_t min_idx = 0;
-                float min_loop_dist = LOOP_DIST.front();
-                for (size_t k = 1; k < LOOP_DIST.size(); k++)
+                std::vector<float> LOOP_DIST;
+                std::vector<int> LOOP_IDX;
+                std::vector<Eigen::Matrix4d> FROM_TFs;
+                for (size_t i = 0; i < keyframePoses.size() - PassIdx; i++)
                 {
-                    Eigen::Matrix4d temp_TF = FROM_TFs[k].inverse() * to_TF;
-                    if (min_loop_dist > LOOP_DIST[k] && temp_TF(0,3) > 8)
+                    Pose6D From_pose = keyframePoses[i];
+                    Eigen::Matrix4d from_TF = get_TF_Matrix(From_pose);
+
+                    float loop_dist = sqrt(pow((to_TF(0,3)-from_TF(0,3)),2)+pow((to_TF(1,3)-from_TF(1,3)),2)+pow((to_TF(2,3)-from_TF(2,3)),2));
+
+                    if (loop_dist > 3)  continue;
+                    LOOP_DIST.push_back(loop_dist);
+                    LOOP_IDX.push_back(i);
+                    FROM_TFs.push_back(from_TF);
+                }
+                int min_idx = -1;
+                if (LOOP_DIST.size() > 0)
+                {
+                    float min_loop_dist = LOOP_DIST.front();
+                    for (size_t k = 1; k < LOOP_DIST.size(); k++)
                     {
-                        min_loop_dist = LOOP_DIST[k];
-                        min_idx = k;
+                        Eigen::Matrix4d temp_TF = FROM_TFs[k].inverse() * to_TF;
+                        Eigen::Affine3f SE3_delta;
+                        SE3_delta.matrix() = temp_TF.cast<float>();
+                        float dx, dy, dz, droll, dpitch, dyaw;
+                        pcl::getTranslationAndEulerAngles (SE3_delta, dx, dy, dz, droll, dpitch, dyaw);
+                        if (min_loop_dist > LOOP_DIST[k] && fabs(rad2deg(dyaw)) < 60)
+                        {
+                            min_loop_dist = LOOP_DIST[k];
+                            min_idx = k;
+                        }
+                    }
+                    if (min_idx > -1)
+                    {
+                        ROS_INFO("loop detected!!");
+                        loopLine.header.stamp = ros::Time().fromSec(timeLaserOdometry);
+                        geometry_msgs::Point p;
+                        p.x = FROM_TFs[min_idx](0,3);    p.y = FROM_TFs[min_idx](1,3);    p.z = FROM_TFs[min_idx](2,3);
+                        loopLine.points.push_back(p);
+                        p.x = to_TF(0,3);    p.y = to_TF(1,3);    p.z = to_TF(2,3);
+                        loopLine.points.push_back(p);
+                        PubLoopLineMarker.publish(loopLine);
+
+                        Eigen::Matrix4d delta_TF = FROM_TFs[min_idx].inverse() * to_TF;
+
+                        LoopBuf.push(std::tuple<int, int, Eigen::Matrix4d>(LOOP_IDX[min_idx], keyframePoses.size()-1, delta_TF));
                     }
                 }
-                ROS_INFO("loop detected!!");
-                loopLine.header.stamp = ros::Time().fromSec(timeLaserOdometry);
-                geometry_msgs::Point p;
-                p.x = FROM_TFs[min_idx](0,3);    p.y = FROM_TFs[min_idx](1,3);    p.z = FROM_TFs[min_idx](2,3);
-                loopLine.points.push_back(p);
-                p.x = to_TF(0,3);    p.y = to_TF(1,3);    p.z = to_TF(2,3);
-                loopLine.points.push_back(p);
-                PubLoopLineMarker.publish(loopLine);
-
-                Eigen::Matrix4d delta_TF = FROM_TFs[min_idx].inverse() * to_TF;
-
-                mBuf.lock();
-                LoopBuf.push(std::tuple<int, int, Eigen::Matrix4d>(LOOP_IDX[min_idx], keyframePoses.size()-1, delta_TF));
-                mBuf.unlock();
             }
             mKF.unlock();
+
+            mPG.lock();
+            const int prev_node_idx = keyframePoses.size() - 2;
+            const int curr_node_idx = keyframePoses.size() - 1; // becuase cpp starts with 0 (actually this index could be any number, but for simple implementation, we follow sequential indexing)
+            if(!gtSAMgraphMade /* prior node */)
+            {
+                const int init_node_idx = 0;
+                gtsam::Pose3 poseOrigin = Pose6DtoGTSAMPose3(keyframePoses.at(init_node_idx));
+
+                // prior factor
+                gtSAMgraph.add(gtsam::PriorFactor<gtsam::Pose3>(init_node_idx, poseOrigin, priorNoise));
+                initialEstimate.insert(init_node_idx, poseOrigin);
+
+                gtSAMgraphMade = true;
+            }
+            else /* consecutive node (and odom factor) after the prior added */
+            {
+                gtsam::Pose3 poseFrom = Pose6DtoGTSAMPose3(keyframePoses.at(prev_node_idx));
+                gtsam::Pose3 poseTo = Pose6DtoGTSAMPose3(keyframePoses.at(curr_node_idx));
+
+                // odom factor
+                gtsam::Pose3 relPose = poseFrom.between(poseTo);
+                gtSAMgraph.add(gtsam::BetweenFactor<gtsam::Pose3>(prev_node_idx, curr_node_idx, relPose, odomNoise));
+
+                //gnss factor
+                if (keyframeGNSS.back().eastPos_std < 0.4 && keyframeGNSS.back().northPos_std < 0.4)
+                {
+                    float up_std;
+                    double upPos;
+                    if (keyframeGNSS.back().upPos_std < 0.2)
+                    {
+                        up_std = keyframeGNSS.back().upPos_std;
+                        upPos = keyframeGNSS.back().upPos;
+                    }
+                    else
+                    {
+                        up_std = 0.1;
+                        upPos = poseTo.z();
+                    }
+                    gpsNoise = gtsam::noiseModel::Diagonal::Sigmas((gtsam::Vector(3) << pow(keyframeGNSS.back().eastPos_std,2), pow(keyframeGNSS.back().northPos_std,2), pow(up_std,2)).finished()); // e,n,u
+                    gtsam::GPSFactor gps_factor(curr_node_idx, gtsam::Point3(keyframeGNSS.back().eastPos, keyframeGNSS.back().northPos, upPos), gpsNoise);
+                    gtSAMgraph.add(gps_factor);
+                    GNSSisGood = true;
+                }
+                initialEstimate.insert(curr_node_idx, poseTo);
+            }
+            mPG.unlock();
         }
         std::chrono::milliseconds dura(2);
         std::this_thread::sleep_for(dura);
@@ -541,7 +592,8 @@ void process_edge(void)
             printf("loam matching time %f ms ++++++++++\n", t_loam.toc());
             if(relative_pose_optional)
             {
-                edge_measurement.push_back(std::tuple<int, int, Eigen::Matrix4d>(prev_node_idx, curr_node_idx, relative_pose_optional.value()));
+                gtsam::Pose3 relative_pose = relative_pose_optional.value();
+                gtSAMgraph.add(gtsam::BetweenFactor<gtsam::Pose3>(prev_node_idx, curr_node_idx, relative_pose, robustLoopNoise));
                 loopLine.header.stamp = ros::Time().fromSec(timeLaserOdometry);
                 geometry_msgs::Point p;
                 p.x = keyframePoses[prev_node_idx].x;    p.y = keyframePoses[prev_node_idx].y;    p.z = keyframePoses[prev_node_idx].z;
@@ -571,7 +623,7 @@ void process_optimization(void)
         {
             TicToc t_opt;
             mPG.lock();
-            runG2Oopt();
+            runISAM2opt();
             mPG.unlock();
             printf("pose graph optimization time %f ms ++++++++++\n", t_opt.toc());
         }
@@ -596,6 +648,12 @@ int main(int argc, char **argv)
     ROS_INFO("KF gap : %f, %f", keyframeMeterGap, keyframeDegGap);
 
     nh.param<double>("matching_threshold",matchingThres, 4);
+
+    ISAM2Params parameters;
+    parameters.relinearizeThreshold = 0.01;
+    parameters.relinearizeSkip = 1;
+    isam = new ISAM2(parameters);
+    initNoises();
 
     KF_Marker.type = visualization_msgs::Marker::SPHERE;
     KF_Marker.header.frame_id = "/body";

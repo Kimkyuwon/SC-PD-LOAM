@@ -11,7 +11,7 @@
     <param name="clustering_size" type="double" value="1.5"/>
 
     <param name="mapping_resolution" type="double" value="0.2"/>
-    <param name="map_matching_range" type="double" value="100"/>
+    <param name="map_matching_range" type="double" value="80"/>
     <param name="matching_threshold" type="double" value="1.5"/>
     <param name="map_viz_range" type="double" value="100"/>
     <param name="get_GT" type="bool" value="false"/>
@@ -22,7 +22,7 @@
     <param name="keyframe_meter_gap" type="double" value="1"/>    <!-- indoor : 1, outdoor : 2 -->
     <param name="keyframe_deg_gap" type="double" value="30.0"/>
 
-    <param name="save_directory" type="string" value="/home/mando/lidarslam_ws/src/SC-PD-LOAM-main/"/>  <!-- CHANGE THIS and end with / -->
+    <param name="save_directory" type="string" value="/home/gpslab/kkw_ws/src/SC-PD-LOAM-main/"/>  <!-- CHANGE THIS and end with / -->
     <!-- nodes -->
     <node pkg="pd_loam" type="scanRegistration" name="scanRegistration" output="screen" />
     <node pkg="pd_loam" type="laserOdometry" name="laserOdometry" output="screen" />

@@ -177,10 +177,10 @@ pcl::PointCloud<PointType>::Ptr laserCloudFeatureMap (new pcl::PointCloud<PointT
 double final_cost = 100;
 Eigen::VectorXd state(6);
 Eigen::MatrixXd Q(6,6);
-Eigen::MatrixXd H(6,6);
+Eigen::MatrixXd H(9,6);
 Eigen::MatrixXd P(6,6);
-Eigen::MatrixXd R(6,6);
-Eigen::MatrixXd K(6,6);
+Eigen::MatrixXd R(9,9);
+Eigen::MatrixXd K(6,9);
 
 void drawEigenVector(ros::Time time, int type, int marker_id, Eigen::Vector3d mean, Eigen::Matrix3d eigVec, Eigen::Vector3d eigen_value, visualization_msgs::MarkerArray &markerarr)
 {
@@ -580,7 +580,7 @@ void process()
                 t_w_curr(2) = gnssMsg->upPos;
                 t_wmap_wodom = t_w_curr;
                 tf::Quaternion q_GNSS;
-                q_GNSS.setRPY(deg2rad(gnssMsg->roll), deg2rad(gnssMsg->pitch), deg2rad(gnssMsg->azimuth));
+                q_GNSS.setRPY(deg2rad(gnssMsg->roll), deg2rad(-gnssMsg->pitch), deg2rad(gnssMsg->azimuth));
                 q_w_curr.w() = q_GNSS.w();
                 q_w_curr.x() = q_GNSS.x();
                 q_w_curr.y() = q_GNSS.y();
@@ -604,9 +604,13 @@ void process()
             {
                 state(0) += gnssMsg->east_vel*gnssMsg->dt; state(1) += gnssMsg->north_vel*gnssMsg->dt; state(2) += gnssMsg->up_vel*gnssMsg->dt;
                 state(3) += deg2rad(gnssMsg->roll_inc);    state(4) += deg2rad(gnssMsg->pitch_inc);   state(5) += deg2rad(gnssMsg->azi_inc);
-                Q.diagonal()<<pow(gnssMsg->eastVel_std,2),pow(gnssMsg->northVel_std,2),pow(gnssMsg->upVel_std,2),
-                              pow(deg2rad(gnssMsg->roll_std),2),pow(deg2rad(gnssMsg->pitch_std),2),pow(deg2rad(gnssMsg->azi_std),2);
+                Q.diagonal()<<pow(3*gnssMsg->eastVel_std,2),pow(3*gnssMsg->northVel_std,2),pow(3*gnssMsg->upVel_std,2),
+                              pow(deg2rad(3*gnssMsg->roll_std),2),pow(deg2rad(3*gnssMsg->pitch_std),2),pow(deg2rad(3*gnssMsg->azi_std),2);
                 P += Q;
+                t_w_curr(0) = state(0); t_w_curr(1) = state(1); t_w_curr(2) = state(2);
+                geometry_msgs::Quaternion qState = tf::createQuaternionMsgFromRollPitchYaw(state(3), state(4), state(5));
+                q_w_curr.w() = qState.w;    q_w_curr.x() = qState.x;    q_w_curr.y() = qState.y;    q_w_curr.z() = qState.z;
+
                 for (size_t ss = 0; ss < laserCloudCornerPDMap->size(); ss++)
                 {
                     Eigen::Vector3d diffVec;
@@ -801,17 +805,21 @@ void process()
             // get angles
             double roll, pitch, yaw;
             m.getRPY(roll, pitch, yaw);
-            if (final_cost < 0.03)
+            if (final_cost < 0.04)
             {
-                Eigen::MatrixXd HPHTR(6,6);
+                R.diagonal()<<pow(0.2,2),pow(0.2,2),pow(0.2,2),pow(deg2rad(0.2),2),pow(deg2rad(0.2),2),pow(deg2rad(0.2),2),
+                        pow(deg2rad(3*gnssMsg->roll_std),2),pow(deg2rad(3*gnssMsg->pitch_std),2),pow(deg2rad(3*gnssMsg->azi_std),2);
+                Eigen::MatrixXd HPHTR(9,9);
                 HPHTR = H*P*H.transpose() + R;
-                K = P*H*HPHTR.inverse();
-                Eigen::VectorXd z(6);
+                K = P*H.transpose()*HPHTR.inverse();
+                Eigen::VectorXd z(9);
                 z(0) = t_w_curr(0); z(1) = t_w_curr(1); z(2) = t_w_curr(2);
                 z(3) = roll;    z(4) = pitch;   z(5) = yaw;
-                Eigen::VectorXd residual(6);
+                z(6) = deg2rad(gnssMsg->roll);  z(7) = deg2rad(-gnssMsg->pitch); z(8) = deg2rad(gnssMsg->azimuth);
+                Eigen::VectorXd residual(9);
                 residual = z-H*state;
                 residual(5) = pi2piRad(residual(5));
+                residual(8) = pi2piRad(residual(8));
                 state += K*residual;
                 Eigen::MatrixXd I(6,6);
                 I.setIdentity();
@@ -917,7 +925,7 @@ void process()
             tf::Transform transform_GNSS;
             transform_GNSS.setOrigin(tf::Vector3(gnssMsg->eastPos, gnssMsg->northPos, gnssMsg->upPos));
             tf::Quaternion q_GNSS;
-            q_GNSS.setRPY(deg2rad(gnssMsg->roll), deg2rad(gnssMsg->pitch), deg2rad(gnssMsg->azimuth));
+            q_GNSS.setRPY(deg2rad(gnssMsg->roll), deg2rad(-gnssMsg->pitch), deg2rad(gnssMsg->azimuth));
             geometry_msgs::PoseStamped gnssPose;
             gnssPose.header.frame_id = "/body";
             gnssPose.header.stamp = ros::Time().fromSec(timeLaserOdometry);
@@ -1005,13 +1013,12 @@ void process()
             eig_marker.markers.clear();
             marker_id = 1;
 #endif
-            q2.setRPY(deg2rad(gnssMsg->roll), deg2rad(-gnssMsg->pitch), state(5));
-            q_w_curr.w() = q2.w();
-            q_w_curr.x() = q2.x();
-            q_w_curr.y() = q2.y();
-            q_w_curr.z() = q2.z();
-            t_w_curr(0) = state(0); t_w_curr(1) = state(1); t_w_curr(2) = state(2);
+
             transformUpdate();
+
+            t_w_curr(0) = state(0); t_w_curr(1) = state(1); t_w_curr(2) = state(2);
+            geometry_msgs::Quaternion qState = tf::createQuaternionMsgFromRollPitchYaw(state(3), state(4), state(5));
+            q_w_curr.w() = qState.w;    q_w_curr.x() = qState.x;    q_w_curr.y() = qState.y;    q_w_curr.z() = qState.z;
 
             pcl::PointCloud<PointType>::Ptr cornerTemp (new pcl::PointCloud<PointType>());
             pcl::PointCloud<PointType>::Ptr surfTemp (new pcl::PointCloud<PointType>());
@@ -1051,8 +1058,9 @@ int main(int argc, char **argv)
     ros::NodeHandle nh;
 
     P.diagonal()<<100,100,100,100,100,100;
-    H.diagonal()<<1,1,1,1,1,1;
-    R.diagonal()<<0.01,0.01,0.01,pow(deg2rad(1),2),pow(deg2rad(1),2),pow(deg2rad(1),2);
+    H(0,0) = 1; H(1,1) = 1; H(2,2) = 1;
+    H(3,3) = 1; H(4,4) = 1; H(5,5) = 1;
+    H(6,3) = 1; H(7,4) = 1; H(8,5) = 1;
     state.setZero();
     nh.param<float>("map_matching_range", mapMatchingRange, 80);
     nh.param<double>("matching_threshold",matchingThres, 4);

@@ -28,7 +28,7 @@ find_package(Ceres REQUIRED)
 find_package(ndt_omp REQUIRED)
 
 find_package(OpenMP REQUIRED)
-find_package(GTSAM REQUIRED)
+find_package(GTSAM REQUIRED QUIET)
 find_package(g2o REQUIRED
 COMPONENTS
 g2o::core
@@ -98,5 +98,6 @@ target_link_libraries(laserPGO ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${CERES_LIBR
   g2o::solver_csparse
   g2o::solver_cholmod
   g2o::stuff
-  g2o::csparse_extension)
+  g2o::csparse_extension
+  gtsam)
 add_dependencies(laserPGO ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
