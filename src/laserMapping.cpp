@@ -602,7 +602,7 @@ void process()
             }
             else
             {
-                state(0) += gnssMsg->east_vel*gnssMsg->dt; state(1) += gnssMsg->north_vel*gnssMsg->dt; state(2) += gnssMsg->up_vel*gnssMsg->dt;
+                state(0) += gnssMsg->east_vel*gnssMsg->dt; state(1) += gnssMsg->north_vel*gnssMsg->dt; //state(2) += gnssMsg->up_vel*gnssMsg->dt;
                 state(3) += deg2rad(gnssMsg->roll_inc);    state(4) += deg2rad(gnssMsg->pitch_inc);   state(5) += deg2rad(gnssMsg->azi_inc);
                 Q.diagonal()<<pow(gnssMsg->eastVel_std,2),pow(gnssMsg->northVel_std,2),pow(5*gnssMsg->upVel_std,2),
                               pow(deg2rad(3*gnssMsg->roll_std),2),pow(deg2rad(3*gnssMsg->pitch_std),2),pow(deg2rad(3*gnssMsg->azi_std),2);
@@ -854,36 +854,7 @@ void process()
             }
 #endif
 
-            sensor_msgs::PointCloud2 laserCloudFullRes3Local;
-            pcl::toROSMsg(*laserCloudFullRes, laserCloudFullRes3Local);
-            laserCloudFullRes3Local.header.stamp = ros::Time().fromSec(timeLaserOdometry);
-            laserCloudFullRes3Local.header.frame_id = "/body";
-            pubLaserCloudFullResLocal.publish(laserCloudFullRes3Local);
 
-            int laserCloudFullResNum = laserCloudFullRes->points.size();
-            for (int i = 0; i < laserCloudFullResNum; i++)
-            {
-                pointAssociateToMap(&laserCloudFullRes->points[i], &laserCloudFullRes->points[i]);
-            }
-
-            sensor_msgs::PointCloud2 laserCloudFullRes3;
-            pcl::toROSMsg(*laserCloudFullRes, laserCloudFullRes3);
-            laserCloudFullRes3.header.stamp = ros::Time().fromSec(timeLaserOdometry);
-            laserCloudFullRes3.header.frame_id = "/body";
-            pubLaserCloudFullRes.publish(laserCloudFullRes3);
-
-            laserCloudFeatureMap->clear();
-            for (size_t i = 0; i < laserCloudFeatureLocal->size(); i++)
-            {
-                PointType pointP;
-                pointAssociateToMap(&laserCloudFeatureLocal->points[i], &pointP);
-                laserCloudFeatureMap->points.push_back(pointP);
-            }
-            sensor_msgs::PointCloud2 laserCloudFeature2;
-            pcl::toROSMsg(*laserCloudFeatureMap, laserCloudFeature2);
-            laserCloudFeature2.header.stamp = ros::Time().fromSec(timeLaserOdometry);
-            laserCloudFeature2.header.frame_id = "/body";
-            pubLaserCloudFeature.publish(laserCloudFeature2);            
 
             double wholeProcessTime = t_whole.toc();
             ProcessTimeMean = ProcessTimeMean*FrameNum + wholeProcessTime;
@@ -972,25 +943,6 @@ void process()
             odomKF.pose.pose.position.y = state(1);
             odomKF.pose.pose.position.z = state(2);
 
-            frameMsg.header.frame_id = "/body";
-            frameMsg.header.stamp = ros::Time().fromSec(timeLaserOdometry);
-            frameMsg.fullPC = laserCloudFullRes3Local;
-            sensor_msgs::PointCloud2 laserCornerMsg;
-            pcl::toROSMsg(*laserCloudCornerLast, laserCornerMsg);
-            laserCornerMsg.header.stamp = ros::Time().fromSec(timeLaserOdometry);
-            laserCornerMsg.header.frame_id = "/body";
-            frameMsg.CornerPC = laserCornerMsg;
-            sensor_msgs::PointCloud2 laserSurfMsg;
-            pcl::toROSMsg(*laserCloudSurfLast, laserSurfMsg);
-            laserSurfMsg.header.stamp = ros::Time().fromSec(timeLaserOdometry);
-            laserSurfMsg.header.frame_id = "/body";
-            frameMsg.SurfPC = laserSurfMsg;
-            frameMsg.pose = odomKF;
-            frameMsg.GNSS = *gnssMsg;
-            frameMsg.frame_idx = frameCount;
-            pubFrame.publish(frameMsg);
-
-
             static tf::TransformBroadcaster br;
             tf::Transform transform;
             tf::Quaternion q;
@@ -1044,6 +996,56 @@ void process()
             getSurfProbabilityDistributions(surfTemp);
 
             updateMap();
+
+            sensor_msgs::PointCloud2 laserCloudFullRes3Local;
+            pcl::toROSMsg(*laserCloudFullRes, laserCloudFullRes3Local);
+            laserCloudFullRes3Local.header.stamp = ros::Time().fromSec(timeLaserOdometry);
+            laserCloudFullRes3Local.header.frame_id = "/body";
+            pubLaserCloudFullResLocal.publish(laserCloudFullRes3Local);
+
+            int laserCloudFullResNum = laserCloudFullRes->points.size();
+            for (int i = 0; i < laserCloudFullResNum; i++)
+            {
+                pointAssociateToMap(&laserCloudFullRes->points[i], &laserCloudFullRes->points[i]);
+            }
+
+            sensor_msgs::PointCloud2 laserCloudFullRes3;
+            pcl::toROSMsg(*laserCloudFullRes, laserCloudFullRes3);
+            laserCloudFullRes3.header.stamp = ros::Time().fromSec(timeLaserOdometry);
+            laserCloudFullRes3.header.frame_id = "/body";
+            pubLaserCloudFullRes.publish(laserCloudFullRes3);
+
+            laserCloudFeatureMap->clear();
+            for (size_t i = 0; i < laserCloudFeatureLocal->size(); i++)
+            {
+                PointType pointP;
+                pointAssociateToMap(&laserCloudFeatureLocal->points[i], &pointP);
+                laserCloudFeatureMap->points.push_back(pointP);
+            }
+            sensor_msgs::PointCloud2 laserCloudFeature2;
+            pcl::toROSMsg(*laserCloudFeatureMap, laserCloudFeature2);
+            laserCloudFeature2.header.stamp = ros::Time().fromSec(timeLaserOdometry);
+            laserCloudFeature2.header.frame_id = "/body";
+            pubLaserCloudFeature.publish(laserCloudFeature2);
+
+            frameMsg.header.frame_id = "/body";
+            frameMsg.header.stamp = ros::Time().fromSec(timeLaserOdometry);
+            frameMsg.fullPC = laserCloudFullRes3Local;
+            sensor_msgs::PointCloud2 laserCornerMsg;
+            pcl::toROSMsg(*laserCloudCornerLast, laserCornerMsg);
+            laserCornerMsg.header.stamp = ros::Time().fromSec(timeLaserOdometry);
+            laserCornerMsg.header.frame_id = "/body";
+            frameMsg.CornerPC = laserCornerMsg;
+            sensor_msgs::PointCloud2 laserSurfMsg;
+            pcl::toROSMsg(*laserCloudSurfLast, laserSurfMsg);
+            laserSurfMsg.header.stamp = ros::Time().fromSec(timeLaserOdometry);
+            laserSurfMsg.header.frame_id = "/body";
+            frameMsg.SurfPC = laserSurfMsg;
+            frameMsg.pose = odomKF;
+            frameMsg.GNSS = *gnssMsg;
+            frameMsg.frame_idx = frameCount;
+            pubFrame.publish(frameMsg);
+
             mMapping.unlock();
             frameCount++;
         }

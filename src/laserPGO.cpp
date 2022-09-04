@@ -57,7 +57,7 @@
 #include "pd_loam/frame.h"
 #include "pd_loam/gnss.h"
 
-#define DEBUG_MODE_POSEGRAPH 0
+#define DEBUG_MODE_POSEGRAPH 1
 
 using namespace gtsam;
 
@@ -79,7 +79,6 @@ int recentIdxUpdated = 0;
 //for pose graph
 gtsam::NonlinearFactorGraph gtSAMgraph;
 bool gtSAMgraphMade = false;
-bool GNSSisGood = false;
 bool isLoopClosed = false;
 int edgeCount = 0;
 gtsam::Values initialEstimate;
@@ -90,6 +89,7 @@ noiseModel::Diagonal::shared_ptr odomNoise;
 noiseModel::Diagonal::shared_ptr odomINSNoise;
 noiseModel::Diagonal::shared_ptr gpsNoise;
 noiseModel::Base::shared_ptr robustLoopNoise;
+noiseModel::Base::shared_ptr robustSeqNoise;
 
 double keyframeMeterGap;
 double keyframeDegGap, keyframeRadGap;
@@ -148,6 +148,13 @@ void initNoises( void )
     robustLoopNoise = gtsam::noiseModel::Robust::Create(
                     gtsam::noiseModel::mEstimator::Cauchy::Create(1), // optional: replacing Cauchy by DCS or GemanMcClure is okay but Cauchy is empirically good.
                     gtsam::noiseModel::Diagonal::Variances(robustNoiseVector6) );
+
+    double loopSeqScore = 1e-8; // constant is ok...
+    gtsam::Vector SeqNoiseVector6(6); // gtsam::Pose3 factor has 6 elements (6D)
+    SeqNoiseVector6 << loopSeqScore, loopSeqScore, loopSeqScore, loopSeqScore, loopSeqScore, loopSeqScore;
+    robustSeqNoise = gtsam::noiseModel::Robust::Create(
+                    gtsam::noiseModel::mEstimator::Cauchy::Create(1), // optional: replacing Cauchy by DCS or GemanMcClure is okay but Cauchy is empirically good.
+                    gtsam::noiseModel::Diagonal::Variances(SeqNoiseVector6) );
 } // initNoises
 
 Eigen::Affine3f odom2affine(nav_msgs::OdometryConstPtr odom)
@@ -238,88 +245,273 @@ void FrameHandler(const pd_loam::frameConstPtr &_frame)
 } // FrameHandler
 
 
-std::optional<gtsam::Pose3> doNDTVirtualRelative( int _loop_kf_idx, int _curr_kf_idx, Eigen::Matrix4d _diff_TF )
+std::optional<gtsam::Pose3> doLOAMVirtualRelative( int _loop_kf_idx, int _curr_kf_idx, Eigen::Matrix4d _diff_TF )
 {
     // parse pointclouds
     pcl::PointCloud<PointType>::Ptr cureKeyframeFeatureCloud(new pcl::PointCloud<PointType>());
     pcl::PointCloud<PointType>::Ptr targetKeyframeFeatureCloud(new pcl::PointCloud<PointType>());
-    for (int i = -2; i <=2; i++)
+    pcl::io::loadPCDFile(ScansDirectory + std::to_string(_curr_kf_idx) + "_feature.pcd", *cureKeyframeFeatureCloud);
+    pcl::io::loadPCDFile(ScansDirectory + std::to_string(_loop_kf_idx) + "_feature.pcd", *targetKeyframeFeatureCloud);
+
+    pcl::transformPointCloud(*cureKeyframeFeatureCloud, *cureKeyframeFeatureCloud, _diff_TF);
+
+    pcl::PointCloud<PointType>::Ptr cureKeyframeCornerCloud(new pcl::PointCloud<PointType>());
+    pcl::PointCloud<PointType>::Ptr cureKeyframeSurfCloud(new pcl::PointCloud<PointType>());
+    for (int i = 0; i < cureKeyframeFeatureCloud->points.size(); i++)
     {
-        if (_curr_kf_idx+i > 0 && _curr_kf_idx+i < keyframePoses.size())
+        if (cureKeyframeFeatureCloud->points[i]._PointXYZINormal::normal_z == 1)
         {
-            pcl::PointCloud<PointType>::Ptr temp_cureKeyframeFeatureCloud(new pcl::PointCloud<PointType>());
-            pcl::io::loadPCDFile(ScansDirectory + std::to_string(_curr_kf_idx+i) + "_full.pcd", *temp_cureKeyframeFeatureCloud);
-            Pose6D temp_pose = keyframePoses[_curr_kf_idx+i];
-            Eigen::Matrix4d curr_TF = get_TF_Matrix(keyframePoses.back());
-            Eigen::Matrix4d temp_TF = get_TF_Matrix(temp_pose);
-            Eigen::Matrix4d temp_diffTF = curr_TF.inverse()*temp_TF;
-            pcl::transformPointCloud(*temp_cureKeyframeFeatureCloud,*temp_cureKeyframeFeatureCloud,temp_diffTF);
-            *cureKeyframeFeatureCloud += *temp_cureKeyframeFeatureCloud;
+            cureKeyframeCornerCloud->points.push_back(cureKeyframeFeatureCloud->points[i]);
         }
-        if (_loop_kf_idx+i > 0 && _loop_kf_idx+i < keyframePoses.size())
+        else if(cureKeyframeFeatureCloud->points[i]._PointXYZINormal::normal_z == 2)
         {
-            pcl::PointCloud<PointType>::Ptr temp_targetKeyframeFeatureCloud(new pcl::PointCloud<PointType>());
-            pcl::io::loadPCDFile(ScansDirectory + std::to_string(_loop_kf_idx+i) + "_full.pcd", *temp_targetKeyframeFeatureCloud);
-            Pose6D temp_pose = keyframePoses[_loop_kf_idx+i];
-            Eigen::Matrix4d curr_TF = get_TF_Matrix(keyframePoses[_loop_kf_idx]);
-            Eigen::Matrix4d temp_TF = get_TF_Matrix(temp_pose);
-            Eigen::Matrix4d temp_diffTF = curr_TF.inverse()*temp_TF;
-            pcl::transformPointCloud(*temp_targetKeyframeFeatureCloud,*temp_targetKeyframeFeatureCloud,temp_diffTF);
-            *targetKeyframeFeatureCloud += *temp_targetKeyframeFeatureCloud;
+            cureKeyframeSurfCloud->points.push_back(cureKeyframeFeatureCloud->points[i]);
         }
     }
-    //pcl::transformPointCloud(*targetKeyframeFeatureCloud, *targetKeyframeFeatureCloud, _diff_TF);
+    pcl::PointCloud<PointType>::Ptr targetKeyframeCornerCloud(new pcl::PointCloud<PointType>());
+    pcl::PointCloud<PointType>::Ptr targetKeyframeSurfCloud(new pcl::PointCloud<PointType>());
+    for (int i = 0; i < targetKeyframeFeatureCloud->points.size(); i++)
+    {
+        if (targetKeyframeFeatureCloud->points[i]._PointXYZINormal::normal_z == 1)
+        {
+            targetKeyframeCornerCloud->points.push_back(targetKeyframeFeatureCloud->points[i]);
+        }
+        else if(targetKeyframeFeatureCloud->points[i]._PointXYZINormal::normal_z == 2)
+        {
+            targetKeyframeSurfCloud->points.push_back(targetKeyframeFeatureCloud->points[i]);
+        }
+    }
 
-    pcl::VoxelGrid<PointType> voxel;
-    voxel.setLeafSize(0.2,0.2,0.2);
-    voxel.setInputCloud(cureKeyframeFeatureCloud);
-    voxel.filter(*cureKeyframeFeatureCloud);
-    voxel.setInputCloud(targetKeyframeFeatureCloud);
-    voxel.filter(*targetKeyframeFeatureCloud);
 #if DEBUG_MODE_POSEGRAPH == 1
     // loop verification
     sensor_msgs::PointCloud2 cureKeyframeCloudMsg;
-    pcl::toROSMsg(*cureKeyframeFeatureCloud, cureKeyframeCloudMsg);
+    pcl::toROSMsg(*cureKeyframeSurfCloud, cureKeyframeCloudMsg);
     cureKeyframeCloudMsg.header.frame_id = "/lidar_local";
     PubLoopCurrent.publish(cureKeyframeCloudMsg);
 
     sensor_msgs::PointCloud2 targetKeyframeCloudMsg;
-    pcl::toROSMsg(*targetKeyframeFeatureCloud, targetKeyframeCloudMsg);
+    pcl::toROSMsg(*targetKeyframeSurfCloud, targetKeyframeCloudMsg);
     targetKeyframeCloudMsg.header.frame_id = "/lidar_local";
     PubLoopTarget.publish(targetKeyframeCloudMsg);
 #endif
-    pclomp::NormalDistributionsTransform<PointType, PointType> ndt;
-    ndt.setResolution(2.0);
-    ndt.setMaximumIterations(5);
-    ndt.setStepSize(0.1);
-    ndt.setTransformationEpsilon(0.01);
-    ndt.setNumThreads(4);
-    ndt.setNeighborhoodSearchMethod(pclomp::DIRECT7);
-    ndt.setInputSource(cureKeyframeFeatureCloud);
-    ndt.setInputTarget(targetKeyframeFeatureCloud);
-    pcl::PointCloud<PointType>::Ptr unused_result(new pcl::PointCloud<PointType>());
-    ndt.align(*unused_result, _diff_TF.cast<float>());
 
-    Eigen::Matrix4f result_TF = ndt.getFinalTransformation();
-    if (ndt.hasConverged() == true && ndt.getTransformationProbability() > 3.5)
+    int cornerPointsNum = cureKeyframeCornerCloud->size();
+    int surfPointsNum = cureKeyframeSurfCloud->size();
+
+    kdtreeCornerLast->setInputCloud(targetKeyframeCornerCloud);
+    kdtreeSurfLast->setInputCloud(targetKeyframeSurfCloud);
+
+    para_t[0] = 0;
+    para_t[1] = 0;
+    para_t[2] = 0;
+    para_q[0] = 0;
+    para_q[1] = 0;
+    para_q[2] = 0;
+    para_q[3] = 1;
+    double final_cost = 1000;
+    for (size_t opti_counter = 0; opti_counter < 2; ++opti_counter)
     {
-        pcl::transformPointCloud(*cureKeyframeFeatureCloud, *cureKeyframeFeatureCloud, result_TF);
+        int corner_correspondence = 0;
+        int plane_correspondence = 0;
+
+        //ceres::LossFunction *loss_function = NULL;
+        ceres::LossFunction *loss_function = new ceres::HuberLoss(0.1);
+        ceres::LocalParameterization *q_parameterization =
+            new ceres::EigenQuaternionParameterization();
+        ceres::Problem::Options problem_options;
+
+        ceres::Problem problem(problem_options);
+        problem.AddParameterBlock(para_t, 3);
+        problem.AddParameterBlock(para_q, 4, q_parameterization);
+
+        pcl::PointXYZINormal pointSel;
+        std::vector<int> pointSearchInd;
+        std::vector<float> pointSearchSqDis;
+
+        std::vector<int> pointSearchInd2;
+        std::vector<float> pointSearchSqDis2;
+        // find correspondence for corner features
+        for (int i = 0; i < cornerPointsNum; ++i)
+        {
+            TransformToStart(&(cureKeyframeCornerCloud->points[i]), &pointSel, q_last_curr, t_last_curr);
+
+            kdtreeCornerLast->nearestKSearch(cureKeyframeCornerCloud->points[i], 1, pointSearchInd2, pointSearchSqDis2);
+            double minPointSqDis2 = matchingThres;
+            int minPointInd2 = -1;
+            for (size_t s = 0; s < pointSearchInd2.size(); s++)
+            {
+                if (pointSearchSqDis2[s] < 6)
+                {
+                    double pointSqDis = (targetKeyframeCornerCloud->points[pointSearchInd2[s]].x - cureKeyframeCornerCloud->points[i].x) *
+                                        (targetKeyframeCornerCloud->points[pointSearchInd2[s]].x - cureKeyframeCornerCloud->points[i].x) +
+                                        (targetKeyframeCornerCloud->points[pointSearchInd2[s]].y - cureKeyframeCornerCloud->points[i].y) *
+                                        (targetKeyframeCornerCloud->points[pointSearchInd2[s]].y - cureKeyframeCornerCloud->points[i].y) +
+                                        (targetKeyframeCornerCloud->points[pointSearchInd2[s]].z - cureKeyframeCornerCloud->points[i].z) *
+                                        (targetKeyframeCornerCloud->points[pointSearchInd2[s]].z - cureKeyframeCornerCloud->points[i].z);
+
+                    if (pointSqDis < minPointSqDis2)
+                    {
+                        // find nearer point
+                        minPointSqDis2 = pointSqDis;
+                        minPointInd2 = pointSearchInd2[s];
+                    }
+                }
+            }
+            if (minPointInd2 >= 0)
+            {
+                pcl::PointCloud<pcl::PointXYZINormal> clusters;
+                for (size_t j = 0; j < targetKeyframeCornerCloud->points.size(); j++)
+                {
+                    if (targetKeyframeCornerCloud->points[minPointInd2]._PointXYZINormal::normal_y != targetKeyframeCornerCloud->points[j]._PointXYZINormal::normal_y)
+                    {
+                        continue;
+                    }
+                    clusters.push_back(targetKeyframeCornerCloud->points[j]);
+                }
+                if (clusters.points.size() >= 5)
+                {
+                    Eigen::Matrix3d covariance = getCovariance(clusters);
+                    Eigen::Vector3d mean = getMean(clusters);
+                    Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> saes(covariance);
+
+                    // if is indeed line feature
+                    // note Eigen library sort eigenvalues in increasing order
+                    Eigen::Vector3d unit_direction = saes.eigenvectors().col(2);
+
+                    Eigen::Vector3d curr_point(cureKeyframeCornerCloud->points[i].x,
+                                               cureKeyframeCornerCloud->points[i].y,
+                                               cureKeyframeCornerCloud->points[i].z);
+
+                    Eigen::Vector3d point_on_line;
+                    point_on_line(0) = mean(0);
+                    point_on_line(1) = mean(1);
+                    point_on_line(2) = mean(2);
+                    Eigen::Vector3d point_a, point_b;
+                    point_a = unit_direction + point_on_line;
+                    point_b = -unit_direction + point_on_line;
+
+                    ceres::CostFunction *cost_function = LidarEdgeFactor::Create(curr_point, point_a, point_b, 1.0);
+                    problem.AddResidualBlock(cost_function, loss_function, para_t, para_q);
+                    corner_correspondence++;
+
+                }
+            }
+        }
+
+        // find correspondence for plane features
+        for (int i = 0; i < surfPointsNum; ++i)
+        {
+            TransformToStart(&(cureKeyframeSurfCloud->points[i]), &pointSel, q_last_curr, t_last_curr);
+            kdtreeSurfLast->nearestKSearch(cureKeyframeSurfCloud->points[i], 1, pointSearchInd2, pointSearchSqDis2);
+
+            double minPointSqDis2 = matchingThres;
+            int minPointInd2 = -1;
+            for (size_t s = 0; s < pointSearchInd2.size(); s++)
+            {
+                if (pointSearchSqDis2[s] < 6)
+                {
+                    double pointSqDis = (targetKeyframeSurfCloud->points[pointSearchInd2[s]].x - cureKeyframeSurfCloud->points[i].x) *
+                                        (targetKeyframeSurfCloud->points[pointSearchInd2[s]].x - cureKeyframeSurfCloud->points[i].x) +
+                                        (targetKeyframeSurfCloud->points[pointSearchInd2[s]].y - cureKeyframeSurfCloud->points[i].y) *
+                                        (targetKeyframeSurfCloud->points[pointSearchInd2[s]].y - cureKeyframeSurfCloud->points[i].y) +
+                                        (targetKeyframeSurfCloud->points[pointSearchInd2[s]].z - cureKeyframeSurfCloud->points[i].z) *
+                                        (targetKeyframeSurfCloud->points[pointSearchInd2[s]].z - cureKeyframeSurfCloud->points[i].z);
+
+                    if (pointSqDis < minPointSqDis2)
+                    {
+                        // find nearer point
+                        minPointSqDis2 = pointSqDis;
+                        minPointInd2 = pointSearchInd2[s];
+                    }
+                }
+            }
+            if (minPointInd2 >= 0)
+            {
+                pcl::PointCloud<pcl::PointXYZINormal> clusters;
+                for (size_t j = 0; j < targetKeyframeSurfCloud->points.size(); j++)
+                {
+                    if (targetKeyframeSurfCloud->points[minPointInd2]._PointXYZINormal::normal_y != targetKeyframeSurfCloud->points[j]._PointXYZINormal::normal_y)
+                    {
+                        continue;
+                    }
+                    clusters.push_back(targetKeyframeSurfCloud->points[j]);
+                }
+
+                if (clusters.points.size() >= 5)
+                {
+                    Eigen::Matrix3d covariance = getCovariance(clusters);
+                    Eigen::Vector3d mean = getMean(clusters);
+                    Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> saes(covariance);
+
+                    // if is indeed plane feature
+                    // note Eigen library sort eigenvalues in increasing order
+                    Eigen::Vector3d direction1 = saes.eigenvectors().col(2);
+                    Eigen::Vector3d direction2 = saes.eigenvectors().col(1);
+
+                    Eigen::Vector3d curr_point(cureKeyframeSurfCloud->points[i].x,
+                                               cureKeyframeSurfCloud->points[i].y,
+                                               cureKeyframeSurfCloud->points[i].z);
+
+                    Eigen::Vector3d point_on_surf;
+                    point_on_surf = mean;
+                    Eigen::Vector3d point_a, point_b, point_c;
+                    point_a = direction1 + point_on_surf;
+                    point_b = -direction1 + point_on_surf;
+                    point_c = direction2 + point_on_surf;
+
+                    ceres::CostFunction *cost_function = LidarPlaneFactor::Create(curr_point, point_a, point_b, point_c, 1.0);
+                    problem.AddResidualBlock(cost_function, loss_function, para_t, para_q);
+                    plane_correspondence++;
+                }
+            }
+        }
+        ceres::Solver::Options options;
+        options.linear_solver_type = ceres::DENSE_QR;
+        options.max_num_iterations = 4;
+        options.minimizer_progress_to_stdout = false;
+        ceres::Solver::Summary summary;
+        ceres::Solve(options, &problem, &summary);
+        final_cost = summary.final_cost/(corner_correspondence + plane_correspondence);
+        //std::cout<<"cost : "<<final_cost<<std::endl;
+    }
+
+    if (final_cost < 0.02)
+    {
+        Eigen::Matrix3d rot = q_last_curr.toRotationMatrix();
+        Eigen::Matrix4d TF (Eigen::Matrix4d::Identity());
+        TF.block(0,0,3,3) = rot;
+        TF(0,3) = t_last_curr(0);   TF(1,3) = t_last_curr(1);   TF(2,3) = t_last_curr(2);
+
+        for (int i = 0; i < int(cureKeyframeSurfCloud->size()); ++i)
+        {
+            const auto &pointFrom = cureKeyframeSurfCloud->points[i];
+            PointType tmp;
+            tmp.x = rot(0,0) * pointFrom.x + rot(0,1) * pointFrom.y + rot(0,2) * pointFrom.z + t_last_curr(0);
+            tmp.y = rot(1,0) * pointFrom.x + rot(1,1) * pointFrom.y + rot(1,2) * pointFrom.z + t_last_curr(1);
+            tmp.z = rot(2,0) * pointFrom.x + rot(2,1) * pointFrom.y + rot(2,2) * pointFrom.z + t_last_curr(2);
+            tmp.intensity = pointFrom.intensity;
+            tmp._PointXYZINormal::curvature = pointFrom._PointXYZINormal::curvature;
+            tmp._PointXYZINormal::normal_y = pointFrom._PointXYZINormal::normal_y;
+            tmp._PointXYZINormal::normal_z = pointFrom._PointXYZINormal::normal_z;
+            cureKeyframeSurfCloud->points[i] = tmp;
+        }
 
 #if DEBUG_MODE_POSEGRAPH == 1
         sensor_msgs::PointCloud2 LOAMCloudMsg;
-        pcl::toROSMsg(*cureKeyframeFeatureCloud, LOAMCloudMsg);
+        pcl::toROSMsg(*cureKeyframeSurfCloud, LOAMCloudMsg);
         LOAMCloudMsg.header.frame_id = "/lidar_local";
         PubLoopLOAM.publish(LOAMCloudMsg);
 #endif
 
-        // Get pose transformation
-        Eigen::Matrix3d FromTo_R = result_TF.block(0,0,3,3).cast<double>();
-        Eigen::Quaterniond q_FromTo(FromTo_R);
+        Eigen::Matrix4d final_TF = _diff_TF * TF;
+        Eigen::Matrix3d final_rot = final_TF.block(0,0,3,3);
+        Eigen::Quaterniond final_q(final_rot);
         // Get pose transformation
         double roll, pitch, yaw;
-        tf::Matrix3x3(tf::Quaternion(q_FromTo.x(), q_FromTo.y(), q_FromTo.z(), q_FromTo.w())).getRPY(roll, pitch, yaw);
-        gtsam::Pose3 poseFrom = Pose3(Rot3::RzRyRx(roll, pitch, yaw), Point3(result_TF(0,3), result_TF(1,3), result_TF(2,3)));
+        tf::Matrix3x3(tf::Quaternion(final_q.x(), final_q.y(), final_q.z(), final_q.w())).getRPY(roll, pitch, yaw);
+        gtsam::Pose3 poseFrom = Pose3(Rot3::RzRyRx(roll, pitch, yaw), Point3(final_TF(0,3), final_TF(1,3), final_TF(2,3)));
         gtsam::Pose3 poseTo = Pose3(Rot3::RzRyRx(0.0, 0.0, 0.0), Point3(0.0, 0.0, 0.0));
+        std::cout<<"x : "<<poseFrom.x()<<", y : "<<poseFrom.y()<<", z : "<<poseFrom.z()<<", r : "<<rad2deg(roll)<<", p : "<<rad2deg(pitch)<<", yaw : "<<rad2deg(yaw)<<std::endl;
 
         return poseFrom.between(poseTo);
     }
@@ -480,7 +672,7 @@ void process_pg()
 
                     float loop_dist = sqrt(pow((to_TF(0,3)-from_TF(0,3)),2)+pow((to_TF(1,3)-from_TF(1,3)),2)+pow((to_TF(2,3)-from_TF(2,3)),2));
 
-                    if (loop_dist > 3)  continue;
+                    if (loop_dist > 2)  continue;
                     LOOP_DIST.push_back(loop_dist);
                     LOOP_IDX.push_back(i);
                     FROM_TFs.push_back(from_TF);
@@ -496,7 +688,7 @@ void process_pg()
                         SE3_delta.matrix() = temp_TF.cast<float>();
                         float dx, dy, dz, droll, dpitch, dyaw;
                         pcl::getTranslationAndEulerAngles (SE3_delta, dx, dy, dz, droll, dpitch, dyaw);
-                        if (min_loop_dist > LOOP_DIST[k] && fabs(rad2deg(dyaw)) < 60)
+                        if (min_loop_dist > LOOP_DIST[k] /*&& fabs(rad2deg(dyaw)) < 60*/)
                         {
                             min_loop_dist = LOOP_DIST[k];
                             min_idx = k;
@@ -518,6 +710,14 @@ void process_pg()
                         LoopBuf.push(std::tuple<int, int, Eigen::Matrix4d>(LOOP_IDX[min_idx], keyframePoses.size()-1, delta_TF));
                     }
                 }
+//                for (size_t i = 2; i < 5; i++)
+//                {
+//                    Pose6D From_pose = keyframePoses[keyframePoses.size()-i];
+//                    Eigen::Matrix4d from_TF = get_TF_Matrix(From_pose);
+//                    Eigen::Matrix4d delta_TF = from_TF.inverse() * to_TF;
+
+//                    LoopBuf.push(std::tuple<int, int, Eigen::Matrix4d>(keyframePoses.size()-i, keyframePoses.size()-1, delta_TF));
+//                }
             }
             mKF.unlock();
 
@@ -545,7 +745,7 @@ void process_pg()
                 gtSAMgraph.add(gtsam::BetweenFactor<gtsam::Pose3>(prev_node_idx, curr_node_idx, relPose, odomNoise));
 
                 //gnss factor
-                if (keyframeGNSS.back().eastPos_std < 0.4 && keyframeGNSS.back().northPos_std < 0.4)
+                if (keyframeGNSS.back().eastPos_std < 0.1 && keyframeGNSS.back().northPos_std < 0.1)
                 {
                     float up_std;
                     double upPos;
@@ -559,10 +759,9 @@ void process_pg()
                         up_std = 0.1;
                         upPos = poseTo.z();
                     }
-                    gpsNoise = gtsam::noiseModel::Diagonal::Sigmas((gtsam::Vector(3) << pow(keyframeGNSS.back().eastPos_std,2), pow(keyframeGNSS.back().northPos_std,2), pow(up_std,2)).finished()); // e,n,u
+                    gpsNoise = gtsam::noiseModel::Diagonal::Variances((gtsam::Vector(3) << pow(keyframeGNSS.back().eastPos_std,2), pow(keyframeGNSS.back().northPos_std,2), pow(up_std,2)).finished()); // e,n,u
                     gtsam::GPSFactor gps_factor(curr_node_idx, gtsam::Point3(keyframeGNSS.back().eastPos, keyframeGNSS.back().northPos, upPos), gpsNoise);
                     gtSAMgraph.add(gps_factor);
-                    GNSSisGood = true;
                 }
                 initialEstimate.insert(curr_node_idx, poseTo);
             }
@@ -583,26 +782,32 @@ void process_edge(void)
             mloop.lock();
             std::tuple<int, int, Eigen::Matrix4d> loop_idx_pair = LoopBuf.front();
             LoopBuf.pop();
-
             const int prev_node_idx = get<0>(loop_idx_pair);
             const int curr_node_idx = get<1>(loop_idx_pair);
             const Eigen::Matrix4d diff_TF = get<2>(loop_idx_pair);
 
             TicToc t_loam;
-            auto relative_pose_optional = doNDTVirtualRelative(prev_node_idx, curr_node_idx, diff_TF);
+            auto relative_pose_optional = doLOAMVirtualRelative(prev_node_idx, curr_node_idx, diff_TF);
             printf("loam matching time %f ms ++++++++++\n", t_loam.toc());
             if(relative_pose_optional)
             {
                 gtsam::Pose3 relative_pose = relative_pose_optional.value();
-                gtSAMgraph.add(gtsam::BetweenFactor<gtsam::Pose3>(prev_node_idx, curr_node_idx, relative_pose, robustLoopNoise));
-                loopLine.header.stamp = ros::Time().fromSec(timeLaserOdometry);
-                geometry_msgs::Point p;
-                p.x = keyframePoses[prev_node_idx].x;    p.y = keyframePoses[prev_node_idx].y;    p.z = keyframePoses[prev_node_idx].z;
-                loopLine.points.push_back(p);
-                p.x = keyframePoses[curr_node_idx].x;    p.y = keyframePoses[curr_node_idx].y;    p.z = keyframePoses[curr_node_idx].z;
-                loopLine.points.push_back(p);
-                PubLoopLineMarker.publish(loopLine);
-                isLoopClosed = true;
+                if ((curr_node_idx - prev_node_idx) > 3)
+                {
+                    loopLine.header.stamp = ros::Time().fromSec(timeLaserOdometry);
+                    geometry_msgs::Point p;
+                    p.x = keyframePoses[prev_node_idx].x;    p.y = keyframePoses[prev_node_idx].y;    p.z = keyframePoses[prev_node_idx].z;
+                    loopLine.points.push_back(p);
+                    p.x = keyframePoses[curr_node_idx].x;    p.y = keyframePoses[curr_node_idx].y;    p.z = keyframePoses[curr_node_idx].z;
+                    loopLine.points.push_back(p);
+                    PubLoopLineMarker.publish(loopLine);
+                    gtSAMgraph.add(gtsam::BetweenFactor<gtsam::Pose3>(prev_node_idx, curr_node_idx, relative_pose, robustLoopNoise));
+                }
+                else
+                {
+                    gtSAMgraph.add(gtsam::BetweenFactor<gtsam::Pose3>(prev_node_idx, curr_node_idx, relative_pose, robustSeqNoise));
+                    isLoopClosed = true;
+                }
             }
             mloop.unlock();
         }

@@ -574,7 +574,7 @@ void laserCloudHandler(const sensor_msgs::PointCloud2ConstPtr &laserCloudMsg)
 
                 if (cloudNeighborPicked[ind] == 0 &&
                     cloudCurvature[ind] > CURVATURE_THRESHOLD &&
-                    cloudOcclusion[ind] == 0 && cloudAlphaAngle[ind] > 50 &&
+                    cloudOcclusion[ind] == 0 && cloudAlphaAngle[ind] > 40 &&
                     ind != sp && ind != ep)
                 {
 
@@ -631,7 +631,7 @@ void laserCloudHandler(const sensor_msgs::PointCloud2ConstPtr &laserCloudMsg)
 
                 if (cloudNeighborPicked[ind] == 0 &&
                     cloudCurvature[ind] < CURVATURE_THRESHOLD &&
-                    cloudAlphaAngle[ind] > 50)
+                    cloudAlphaAngle[ind] > 40)
                 {
 
                     cloudLabel[ind] = -1;
