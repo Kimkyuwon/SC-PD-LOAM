@@ -1,6 +1,6 @@
 // This is an advanced implementation of the algorithm described in the following paper:
 //   J. Zhang and S. Singh. LOAM: Lidar Odometry and Mapping in Real-time.
-//     Robotics: Science and Systems Conference (RSS). Berkeley, CA, July 2014. 
+//     Robotics: Science and Systems Conference (RSS). Berkeley, CA, July 2014.
 
 // Modifier: Tong Qin               qintonguav@gmail.com
 // 	         Shaozu Cao 		    saozu.cao@connect.ust.hk
@@ -53,6 +53,7 @@
 #include <pcl/kdtree/kdtree_flann.h>
 #include <pcl/segmentation/extract_clusters.h>
 #include <pcl/filters/statistical_outlier_removal.h>
+#include <pcl/filters/conditional_removal.h>
 #include <ros/ros.h>
 #include <sensor_msgs/Imu.h>
 #include <sensor_msgs/PointCloud2.h>
@@ -73,6 +74,9 @@ std::string LIDAR_TYPE;
 const double scanPeriod = 0.1;
 const int systemDelay = 0;
 
+std::string save_directory, filePath;
+std::ifstream readFile;
+
 int systemInitCount = 0;
 bool systemInited = false;
 int N_SCANS = 0;
@@ -81,7 +85,6 @@ float cloudCurvature[200000];
 int cloudSortInd[200000];
 int cloudNeighborPicked[200000];
 int cloudLabel[200000];
-int cloudOcclusion[200000];
 float cloudAlphaAngle[200000];
 int SharpEdgeNum, LessSharpEdgeNum, FlatSurfNum, LessFlatSurfNum;
 
@@ -130,6 +133,11 @@ void removeClosedPointCloud(const pcl::PointCloud<PointT> &cloud_in,
     {
         if (cloud_in.points[i].x * cloud_in.points[i].x + cloud_in.points[i].y * cloud_in.points[i].y + cloud_in.points[i].z * cloud_in.points[i].z < thres * thres)
             continue;
+
+//        if (cloud_in.points[i].x > 0 && cloud_in.points[i].x < 20
+//                && cloud_in.points[i].y > -3 && cloud_in.points[i].y < 3
+//                && cloud_in.points[i].z > -0.4 && cloud_in.points[i].z < 1.5)  continue;
+
         cloud_out.points[j] = cloud_in.points[i];
         j++;
     }
@@ -144,7 +152,7 @@ void removeClosedPointCloud(const pcl::PointCloud<PointT> &cloud_in,
 }
 
 void clusteringCornerPointCloud(const pcl::PointCloud<PointType> &cornerPointsLessSharp)
-{    
+{
     std::vector<pcl::PointCloud<PointType>> corner_clusterPC;
     std::vector<int> clusterPicked(cornerPointsLessSharp.size(), 0);
 
@@ -285,7 +293,7 @@ void clusteringSurfPointCloud(const pcl::PointCloud<PointType> &surfPointsLessFl
                     Eigen::Matrix3d cov = getCovariance(tmp_kdtree_cluster);
                     Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> saes(cov);
 
-                    if (saes.eigenvalues()[0] > pow(0.1,2))
+                    if (saes.eigenvalues()[0] > pow(0.2,2))
                     {
                         tmp_kdtree_cluster.points.pop_back();
                         tmpkdtreePicked[pointSearchInd[ii]] = 0;
@@ -319,13 +327,12 @@ void gnssHandler(const novatel_gps_msgs::InspvaxConstPtr &gnssMsg)
     Eigen::Matrix3f rotation;
     rotation = Eigen::AngleAxisf(deg2rad(rpy(0)), Eigen::Vector3f::UnitX())
              * Eigen::AngleAxisf(-deg2rad(rpy(1)), Eigen::Vector3f::UnitY())
-             * Eigen::AngleAxisf(deg2rad(rpy(2))/* + M_PI/2*/, Eigen::Vector3f::UnitZ());
+             * Eigen::AngleAxisf(deg2rad(rpy(2)), Eigen::Vector3f::UnitZ());
     bodyVelo = rotation.inverse() * velo;
-    if (systemInited == true)
-    {
-        Eigen::Vector3d xyz = llh2xyz(llh);
-        enu = xyz2enu(xyz, xyz_origin);
-    }
+
+    Eigen::Vector3d xyz = llh2xyz(llh);
+    enu = xyz2enu(xyz, xyz_origin);
+
 }
 
 void laserCloudHandler(const sensor_msgs::PointCloud2ConstPtr &laserCloudMsg)
@@ -333,7 +340,6 @@ void laserCloudHandler(const sensor_msgs::PointCloud2ConstPtr &laserCloudMsg)
     if (!systemInited && (gnssStatus == "INS_RTKFLOAT" || gnssStatus == "INS_RTKFIXED" || gnssStatus == "INS_PSRDIFF") && insStatus == "INS_SOLUTION_GOOD")
     {
         std::cout<<"system start."<<std::endl;
-        xyz_origin = llh2xyz(llh);
         rpy_prev = rpy;
         GNSS_prevTime = gnssTime;
         systemInited = true;
@@ -469,6 +475,7 @@ void laserCloudHandler(const sensor_msgs::PointCloud2ConstPtr &laserCloudMsg)
         float relTime = (ori - startOri) / (endOri - startOri);
         point._PointXYZINormal::curvature = scanID + scanPeriod * relTime;
         point._PointXYZINormal::normal_x = ori;
+        //Compensate Point Cloud Distortion using GNSS/INS data
         double scale = (point._PointXYZINormal::curvature - int(point._PointXYZINormal::curvature)) / scanPeriod;
         if (scale > 1)
         {
@@ -479,7 +486,7 @@ void laserCloudHandler(const sensor_msgs::PointCloud2ConstPtr &laserCloudMsg)
         Eigen::Matrix3f R;
         R = Eigen::AngleAxisf(deg2rad(angInc(0)), Eigen::Vector3f::UnitX())
           * Eigen::AngleAxisf(-deg2rad(angInc(1)), Eigen::Vector3f::UnitY())
-          * Eigen::AngleAxisf(-deg2rad(angInc(2)), Eigen::Vector3f::UnitZ());
+          * Eigen::AngleAxisf(deg2rad(angInc(2)), Eigen::Vector3f::UnitZ());
         pcl::PointXYZ tempPoint;
         tempPoint.x = R(0,0) * point.x + R(0,1) * point.y + R(0,2) * point.z + linearInc(0);
         tempPoint.y = R(1,0) * point.x + R(1,1) * point.y + R(1,2) * point.z + linearInc(1);
@@ -487,7 +494,7 @@ void laserCloudHandler(const sensor_msgs::PointCloud2ConstPtr &laserCloudMsg)
         point.x = tempPoint.x;  point.y = tempPoint.y;  point.z = tempPoint.z;
         laserCloudScans[scanID].push_back(point);
     }
-    
+
     cloudSize = count;
 
     //printf("points size %d \n", cloudSize);
@@ -500,6 +507,7 @@ void laserCloudHandler(const sensor_msgs::PointCloud2ConstPtr &laserCloudMsg)
         scanEndInd[i] = laserCloud->size() - 6;
         alphaAngle[i] = (endOri - startOri)/laserCloudScans[i].size();
     }
+
 
     for (int i = 5; i < cloudSize - 5; i++)
     {
@@ -532,14 +540,6 @@ void laserCloudHandler(const sensor_msgs::PointCloud2ConstPtr &laserCloudMsg)
         cloudSortInd[i] = i;
         cloudNeighborPicked[i] = 0;
         cloudLabel[i] = 0;
-        if (neighborDist1 > 0.1 || neighborDist2 > 0.1)
-        {
-            cloudOcclusion[i] = 1;
-        }
-        else
-        {
-            cloudOcclusion[i] = 0;
-        }
         cloudAlphaAngle[i] = rad2deg(fmin(angle1, angle2));
     }
 
@@ -570,11 +570,10 @@ void laserCloudHandler(const sensor_msgs::PointCloud2ConstPtr &laserCloudMsg)
             int largestPickedNum = 0;
             for (int k = ep; k >= sp; k--)
             {
-                int ind = cloudSortInd[k];                
+                int ind = cloudSortInd[k];
 
                 if (cloudNeighborPicked[ind] == 0 &&
-                    cloudCurvature[ind] > CURVATURE_THRESHOLD &&
-                    cloudOcclusion[ind] == 0 && cloudAlphaAngle[ind] > 40 &&
+                    cloudCurvature[ind] > CURVATURE_THRESHOLD && cloudAlphaAngle[ind] > 40 &&
                     ind != sp && ind != ep)
                 {
 
@@ -630,8 +629,7 @@ void laserCloudHandler(const sensor_msgs::PointCloud2ConstPtr &laserCloudMsg)
                 int ind = cloudSortInd[k];
 
                 if (cloudNeighborPicked[ind] == 0 &&
-                    cloudCurvature[ind] < CURVATURE_THRESHOLD &&
-                    cloudAlphaAngle[ind] > 40)
+                    cloudCurvature[ind] < CURVATURE_THRESHOLD && cloudAlphaAngle[ind] > 40)
                 {
 
                     cloudLabel[ind] = -1;
@@ -715,8 +713,8 @@ void laserCloudHandler(const sensor_msgs::PointCloud2ConstPtr &laserCloudMsg)
     gnssMsg.gnss_status = gnssStatus;   gnssMsg.ins_status = insStatus; gnssMsg.dt = GNSS_dt;
     gnssMsg.lat = llh(0);   gnssMsg.lon = llh(1);   gnssMsg.alt = llh(2);
     gnssMsg.eastPos = enu(0);   gnssMsg.northPos = enu(1);  gnssMsg.upPos = enu(2);
-    gnssMsg.roll = rpy(0);   gnssMsg.pitch = rpy(1);   gnssMsg.azimuth = rpy(2);
-    gnssMsg.roll_inc = rpy_inc(0);  gnssMsg.pitch_inc = rpy_inc(1);  gnssMsg.azi_inc = rpy_inc(2);
+    gnssMsg.roll = rpy(0);   gnssMsg.pitch = -rpy(1);   gnssMsg.azimuth = rpy(2);
+    gnssMsg.roll_inc = rpy_inc(0);  gnssMsg.pitch_inc = -rpy_inc(1);  gnssMsg.azi_inc = rpy_inc(2);
     gnssMsg.east_vel = velo(0);   gnssMsg.north_vel = velo(1);   gnssMsg.up_vel = velo(2);
     gnssMsg.x_vel = bodyVelo(0);    gnssMsg.y_vel = bodyVelo(1);    gnssMsg.z_vel = bodyVelo(2);
     gnssMsg.eastPos_std = pos_std(0);   gnssMsg.northPos_std = pos_std(1);   gnssMsg.upPos_std = pos_std(2);
@@ -808,9 +806,9 @@ int main(int argc, char **argv)
     if (LIDAR_TYPE == "VLP16" && N_SCANS == 16)
     {
         SharpEdgeNum = 2;
-        LessSharpEdgeNum = 10;
+        LessSharpEdgeNum = 20;
         FlatSurfNum = 10;
-        LessFlatSurfNum = 300;
+        LessFlatSurfNum = 400;
     }
     else if (LIDAR_TYPE == "HDL32" && N_SCANS == 32)
     {
@@ -825,6 +823,36 @@ int main(int argc, char **argv)
         LessSharpEdgeNum = 5;
         FlatSurfNum = 5;
         LessFlatSurfNum = 80;
+    }
+
+    // save directories
+    nh.param<std::string>("save_directory", save_directory, "/"); // pose assignment every k m move
+    filePath = save_directory + "WayPoint.txt";
+
+    readFile.open(filePath);
+    std::string line;
+    if(readFile.is_open())
+    {
+        std::getline(readFile, line);
+
+        std::stringstream sstream(line);
+        std::string word;
+        std::vector<float> wayPointData;
+        while(getline(sstream, word, ' '))
+        {
+            wayPointData.push_back(std::stod(word));
+        }
+        Eigen::Vector3d WaypointLLH;
+        WaypointLLH(0) = wayPointData[0];
+        WaypointLLH(1) = wayPointData[1];
+        WaypointLLH(2) = wayPointData[2];
+        xyz_origin = llh2xyz(WaypointLLH);
+        readFile.close();
+    }
+    else
+    {
+        std::cout << "Unable to open file";
+        return 1;
     }
 
     ros::Subscriber subLaserCloud = nh.subscribe<sensor_msgs::PointCloud2>(LidarTopic, 100, laserCloudHandler);

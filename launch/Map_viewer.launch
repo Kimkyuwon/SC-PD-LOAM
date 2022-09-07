@@ -1,0 +1,16 @@
+<launch>
+    <param name="mapping_resolution" type="double" value="0.2"/>
+
+    <param name="save_directory" type="string" value="/home/mando/lidarslam_ws/src/SC-PD-LOAM-main/"/>  <!-- CHANGE THIS and end with / -->
+    <param name="map_directory" type="string" value="/home/mando/lidarslam_ws/src/SC-PD-LOAM-main/PangyoMap/"/>    <!-- CHANGE THIS and end with / -->
+    <!-- nodes -->
+    <node pkg="waypoint_reader" type="waypoint_reader" name="waypoint_reader" output="screen" />
+    <node pkg="pd_loam" type="mapViewer" name="mapViewer" output="screen" />
+
+    <!-- visulaization -->
+    <arg name="rviz" default="true" />
+    <group if="$(arg rviz)">
+        <node launch-prefix="nice" pkg="rviz" type="rviz" name="rviz" args="-d $(find pd_loam)/rviz_cfg/map_viewer.rviz" />
+    </group>
+
+</launch>

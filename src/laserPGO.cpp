@@ -57,7 +57,7 @@
 #include "pd_loam/frame.h"
 #include "pd_loam/gnss.h"
 
-#define DEBUG_MODE_POSEGRAPH 1
+#define DEBUG_MODE_POSEGRAPH 0
 
 using namespace gtsam;
 
@@ -80,7 +80,7 @@ int recentIdxUpdated = 0;
 gtsam::NonlinearFactorGraph gtSAMgraph;
 bool gtSAMgraphMade = false;
 bool isLoopClosed = false;
-int edgeCount = 0;
+int graphCount = 0;
 gtsam::Values initialEstimate;
 gtsam::ISAM2 *isam;
 gtsam::Values isamCurrentEstimate;
@@ -139,10 +139,10 @@ void initNoises( void )
     priorNoise = noiseModel::Diagonal::Variances(priorNoiseVector6);
 
     gtsam::Vector odomNoiseVector6(6);
-    odomNoiseVector6 << 1e-6, 1e-6, 1e-6, 1e-4, 1e-4, 1e-4;
+    odomNoiseVector6 << 1e-2, 1e-2, 1e-2, 1e-4, 1e-4, 1e-4;
     odomNoise = noiseModel::Diagonal::Variances(odomNoiseVector6);
 
-    double loopNoiseScore = 0.5; // constant is ok...
+    double loopNoiseScore = 1e-2; // constant is ok...
     gtsam::Vector robustNoiseVector6(6); // gtsam::Pose3 factor has 6 elements (6D)
     robustNoiseVector6 << loopNoiseScore, loopNoiseScore, loopNoiseScore, loopNoiseScore, loopNoiseScore, loopNoiseScore;
     robustLoopNoise = gtsam::noiseModel::Robust::Create(
@@ -472,7 +472,7 @@ std::optional<gtsam::Pose3> doLOAMVirtualRelative( int _loop_kf_idx, int _curr_k
         ceres::Solver::Summary summary;
         ceres::Solve(options, &problem, &summary);
         final_cost = summary.final_cost/(corner_correspondence + plane_correspondence);
-        //std::cout<<"cost : "<<final_cost<<std::endl;
+        std::cout<<"cost : "<<final_cost<<std::endl;
     }
 
     if (final_cost < 0.02)
@@ -511,7 +511,6 @@ std::optional<gtsam::Pose3> doLOAMVirtualRelative( int _loop_kf_idx, int _curr_k
         tf::Matrix3x3(tf::Quaternion(final_q.x(), final_q.y(), final_q.z(), final_q.w())).getRPY(roll, pitch, yaw);
         gtsam::Pose3 poseFrom = Pose3(Rot3::RzRyRx(roll, pitch, yaw), Point3(final_TF(0,3), final_TF(1,3), final_TF(2,3)));
         gtsam::Pose3 poseTo = Pose3(Rot3::RzRyRx(0.0, 0.0, 0.0), Point3(0.0, 0.0, 0.0));
-        std::cout<<"x : "<<poseFrom.x()<<", y : "<<poseFrom.y()<<", z : "<<poseFrom.z()<<", r : "<<rad2deg(roll)<<", p : "<<rad2deg(pitch)<<", yaw : "<<rad2deg(yaw)<<std::endl;
 
         return poseFrom.between(poseTo);
     }
@@ -710,14 +709,6 @@ void process_pg()
                         LoopBuf.push(std::tuple<int, int, Eigen::Matrix4d>(LOOP_IDX[min_idx], keyframePoses.size()-1, delta_TF));
                     }
                 }
-//                for (size_t i = 2; i < 5; i++)
-//                {
-//                    Pose6D From_pose = keyframePoses[keyframePoses.size()-i];
-//                    Eigen::Matrix4d from_TF = get_TF_Matrix(From_pose);
-//                    Eigen::Matrix4d delta_TF = from_TF.inverse() * to_TF;
-
-//                    LoopBuf.push(std::tuple<int, int, Eigen::Matrix4d>(keyframePoses.size()-i, keyframePoses.size()-1, delta_TF));
-//                }
             }
             mKF.unlock();
 
@@ -745,7 +736,7 @@ void process_pg()
                 gtSAMgraph.add(gtsam::BetweenFactor<gtsam::Pose3>(prev_node_idx, curr_node_idx, relPose, odomNoise));
 
                 //gnss factor
-                if (keyframeGNSS.back().eastPos_std < 0.1 && keyframeGNSS.back().northPos_std < 0.1)
+                if (keyframeGNSS.back().eastPos_std < 1.5 && keyframeGNSS.back().northPos_std < 1.5)
                 {
                     float up_std;
                     double upPos;
@@ -759,11 +750,15 @@ void process_pg()
                         up_std = 0.1;
                         upPos = poseTo.z();
                     }
-                    gpsNoise = gtsam::noiseModel::Diagonal::Variances((gtsam::Vector(3) << pow(keyframeGNSS.back().eastPos_std,2), pow(keyframeGNSS.back().northPos_std,2), pow(up_std,2)).finished()); // e,n,u
+
+                    if (keyframeGNSS.back().eastPos_std < 0.2)  keyframeGNSS.back().eastPos_std = 0.2;
+                    if (keyframeGNSS.back().northPos_std < 0.2)  keyframeGNSS.back().northPos_std = 0.2;
+                    gpsNoise = gtsam::noiseModel::Diagonal::Variances((gtsam::Vector(3) << pow(5*keyframeGNSS.back().eastPos_std,2), pow(5*keyframeGNSS.back().northPos_std,2), pow(up_std,2)).finished()); // e,n,u
                     gtsam::GPSFactor gps_factor(curr_node_idx, gtsam::Point3(keyframeGNSS.back().eastPos, keyframeGNSS.back().northPos, upPos), gpsNoise);
                     gtSAMgraph.add(gps_factor);
                 }
                 initialEstimate.insert(curr_node_idx, poseTo);
+                graphCount++;
             }
             mPG.unlock();
         }
@@ -792,22 +787,14 @@ void process_edge(void)
             if(relative_pose_optional)
             {
                 gtsam::Pose3 relative_pose = relative_pose_optional.value();
-                if ((curr_node_idx - prev_node_idx) > 3)
-                {
-                    loopLine.header.stamp = ros::Time().fromSec(timeLaserOdometry);
-                    geometry_msgs::Point p;
-                    p.x = keyframePoses[prev_node_idx].x;    p.y = keyframePoses[prev_node_idx].y;    p.z = keyframePoses[prev_node_idx].z;
-                    loopLine.points.push_back(p);
-                    p.x = keyframePoses[curr_node_idx].x;    p.y = keyframePoses[curr_node_idx].y;    p.z = keyframePoses[curr_node_idx].z;
-                    loopLine.points.push_back(p);
-                    PubLoopLineMarker.publish(loopLine);
-                    gtSAMgraph.add(gtsam::BetweenFactor<gtsam::Pose3>(prev_node_idx, curr_node_idx, relative_pose, robustLoopNoise));
-                }
-                else
-                {
-                    gtSAMgraph.add(gtsam::BetweenFactor<gtsam::Pose3>(prev_node_idx, curr_node_idx, relative_pose, robustSeqNoise));
-                    isLoopClosed = true;
-                }
+                loopLine.header.stamp = ros::Time().fromSec(timeLaserOdometry);
+                geometry_msgs::Point p;
+                p.x = keyframePoses[prev_node_idx].x;    p.y = keyframePoses[prev_node_idx].y;    p.z = keyframePoses[prev_node_idx].z;
+                loopLine.points.push_back(p);
+                p.x = keyframePoses[curr_node_idx].x;    p.y = keyframePoses[curr_node_idx].y;    p.z = keyframePoses[curr_node_idx].z;
+                loopLine.points.push_back(p);
+                PubLoopLineMarker.publish(loopLine);
+                gtSAMgraph.add(gtsam::BetweenFactor<gtsam::Pose3>(prev_node_idx, curr_node_idx, relative_pose, robustLoopNoise));
             }
             mloop.unlock();
         }
@@ -820,18 +807,19 @@ void process_edge(void)
 
 void process_optimization(void)
 {
-    float hz = 1;
+    float hz = 10;
     ros::Rate rate(hz);
     while (ros::ok())
     {
         rate.sleep();
-        if(isNowKeyFrame == true)
+        if(graphCount > 5)
         {
             TicToc t_opt;
             mPG.lock();
             runISAM2opt();
             mPG.unlock();
             printf("pose graph optimization time %f ms ++++++++++\n", t_opt.toc());
+            graphCount = 0;
         }
     }
 }

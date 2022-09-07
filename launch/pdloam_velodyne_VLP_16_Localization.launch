@@ -9,25 +9,18 @@
     <param name="minimum_range" type="double" value="1.5"/>
     <param name="clustering_size" type="double" value="1.5"/>
 
-    <param name="mapping_resolution" type="double" value="0.2"/>
     <param name="map_matching_range" type="double" value="80"/>
     <param name="matching_threshold" type="double" value="1.5"/>
 
     <!--  -->
     <param name="lidar_type" type="string" value="VLP16"/>
 
-    <param name="keyframe_meter_gap" type="double" value="1"/>    <!-- indoor : 1, outdoor : 2 -->
-    <param name="keyframe_deg_gap" type="double" value="30.0"/>
-
     <param name="save_directory" type="string" value="/home/mando/lidarslam_ws/src/SC-PD-LOAM-main/"/>  <!-- CHANGE THIS and end with / -->
     <param name="map_directory" type="string" value="/home/mando/lidarslam_ws/src/SC-PD-LOAM-main/PangyoMap/"/>    <!-- CHANGE THIS and end with / -->
     <!-- nodes -->
     <node pkg="pd_loam" type="scanRegistration" name="scanRegistration" output="screen" />
-    <node pkg="pd_loam" type="laserOdometry" name="laserOdometry" output="screen" />
-    <node pkg="pd_loam" type="laserMapping" name="laserMapping" output="screen" />
-    <node pkg="pd_loam" type="laserPGO" name="laserPGO" output="screen" />
     <node pkg="waypoint_reader" type="waypoint_reader" name="waypoint_reader" output="screen" />
-    <node pkg="pd_loam" type="mapGeneration" name="mapGeneration" output="screen" />
+    <node pkg="pd_loam" type="laserLocalization" name="laserLocalization" output="screen" />
 
     <!-- visulaization -->
     <arg name="rviz" default="true" />

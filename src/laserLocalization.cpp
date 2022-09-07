@@ -34,8 +34,6 @@
 // ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 // POSSIBILITY OF SUCH DAMAGE.
 
-#define DEBUG_MODE_MAPPING 0
-
 #include <fstream>
 #include <math.h>
 #include <vector>
@@ -85,13 +83,14 @@ int frameCount = 0;
 double ProcessTimeMean = 0;
 int FrameNum = 0;
 
-double timeLaserCloudCornerLast = 0;
-double timeLaserCloudSurfLast = 0;
+double timeLaserCloudFeature = 0;
 double timeLaserCloudFullRes = 0;
-double timeLaserOdometry = 0;
 double timeGNSS = 0;
 
 bool initSequence = false;
+
+std::string map_directory;
+std::ifstream readFile;
 
 // input: from odom
 pcl::PointCloud<PointType>::Ptr laserCloudCornerLast(new pcl::PointCloud<PointType>());
@@ -116,11 +115,19 @@ pcl::PointCloud<PointType>::Ptr laserCloudFullRes(new pcl::PointCloud<PointType>
 
 // every map points of probability distribution
 pcl::PointCloud<PointType>::Ptr laserCloudCornerPDMap(new pcl::PointCloud<PointType>());
-pcl::PointCloud<PointType>::Ptr laserCloudSurfPDMap(new pcl::PointCloud<PointType>());
-
+pcl::PointCloud<PointType>::Ptr laserCloudSurfPDMap(new pcl::PointCloud<PointType>());\
 std::vector<Eigen::Matrix3d> cornerMapCov;
 std::vector<Eigen::Matrix3d> surfMapCov;
 
+pcl::PointCloud<PointType>::Ptr laserCloudCornerPDInitMap(new pcl::PointCloud<PointType>());
+pcl::PointCloud<PointType>::Ptr laserCloudSurfPDInitMap(new pcl::PointCloud<PointType>());
+std::vector<Eigen::Matrix3d> cornerMapInitCov;
+std::vector<Eigen::Matrix3d> surfMapInitCov;
+
+pcl::PointCloud<PointType>::Ptr laserCloudCornerPDUpdateMap(new pcl::PointCloud<PointType>());
+pcl::PointCloud<PointType>::Ptr laserCloudSurfPDUpdateMap(new pcl::PointCloud<PointType>());
+std::vector<Eigen::Matrix3d> cornerMapUpdateCov;
+std::vector<Eigen::Matrix3d> surfMapUpdateCov;
 //kd-tree
 pcl::KdTreeFLANN<PointType>::Ptr kdtreeCornerFromMap(new pcl::KdTreeFLANN<PointType>());
 pcl::KdTreeFLANN<PointType>::Ptr kdtreeSurfFromMap(new pcl::KdTreeFLANN<PointType>());
@@ -144,8 +151,7 @@ Eigen::Vector3d t_wodom_curr(0, 0, 0);
 float mapMatchingRange = 0;
 double matchingThres = 0;
 
-std::queue<sensor_msgs::PointCloud2ConstPtr> cornerLastBuf;
-std::queue<sensor_msgs::PointCloud2ConstPtr> surfLastBuf;
+std::queue<sensor_msgs::PointCloud2ConstPtr> featureBuf;
 std::queue<sensor_msgs::PointCloud2ConstPtr> fullResBuf;
 std::queue<nav_msgs::Odometry::ConstPtr> odometryBuf;
 std::queue<pd_loam::gnss::ConstPtr> gnssBuf;
@@ -161,16 +167,10 @@ ros::Publisher pubLaserCloudFullRes, pubOdomAftMapped;
 ros::Publisher pubLaserCloudFullResLocal;
 ros::Publisher pubLaserCloudFeature;
 ros::Publisher pubLaserAfterMappedPath, pubGnssPath, pubKalmanPath;
-ros::Publisher pubFrame;
-ros::Publisher pubEigenMarker;
 ros::Publisher pubProcessTime, pubCost;
 
 nav_msgs::Path laserAfterMappedPath, gnssEnuPath, KalmanPath;
 
-int marker_id = 1;
-visualization_msgs::MarkerArray eig_marker;
-
-pd_loam::frame frameMsg;
 pcl::PointCloud<PointType>::Ptr laserCloudFeatureLocal (new pcl::PointCloud<PointType> ());
 pcl::PointCloud<PointType>::Ptr laserCloudFeatureMap (new pcl::PointCloud<PointType> ());
 
@@ -181,54 +181,6 @@ Eigen::MatrixXd H(9,6);
 Eigen::MatrixXd P(6,6);
 Eigen::MatrixXd R(9,9);
 Eigen::MatrixXd K(6,9);
-
-void drawEigenVector(ros::Time time, int type, int marker_id, Eigen::Vector3d mean, Eigen::Matrix3d eigVec, Eigen::Vector3d eigen_value, visualization_msgs::MarkerArray &markerarr)
-{
-    for (int e = 0; e < 3; e++)
-    {
-        visualization_msgs::Marker marker;
-        marker.header.frame_id = "/body";
-        marker.header.stamp = time;
-        marker.type = visualization_msgs::Marker::ARROW;
-        marker.action = visualization_msgs::Marker::ADD;
-        marker.color.a = 1;
-        marker.scale.x = 0.05;
-        marker.scale.y = 0.05;
-        marker.scale.z = 0.05;
-        if (type == 1)      marker.color.r = 1;
-        else if (type == 2)      marker.color.b = 1;
-        //marker.lifetime = ros::Duration(0.2);
-        geometry_msgs::Point p;
-        p.x = mean(0);    p.y = mean(1);    p.z = mean(2);
-        marker.points.push_back(p);
-        Eigen::Vector3d ev = eigVec.col(e);
-        p.x = mean(0)+sqrt(eigen_value(e))*ev(0);    p.y = mean(1)+sqrt(eigen_value(e))*ev(1);    p.z = mean(2)+sqrt(eigen_value(e))*ev(2);
-        marker.points.push_back(p);
-        marker.id = marker_id;
-        markerarr.markers.push_back(marker);
-        marker_id++;
-
-        visualization_msgs::Marker marker2;
-        marker2.header.frame_id = "/body";
-        marker2.header.stamp = time;
-        marker2.type = visualization_msgs::Marker::ARROW;
-        marker2.action = visualization_msgs::Marker::ADD;
-        marker2.color.a = 1;
-        marker2.scale.x = 0.05;
-        marker2.scale.y = 0.05;
-        marker2.scale.z = 0.05;
-        if (type == 1)      marker2.color.r = 1;
-        else if (type == 2)      marker2.color.b = 1;
-        //marker.lifetime = ros::Duration(0.2);
-        p.x = mean(0);    p.y = mean(1);    p.z = mean(2);
-        marker2.points.push_back(p);
-        p.x = mean(0)-sqrt(eigen_value(e))*ev(0);    p.y = mean(1)-sqrt(eigen_value(e))*ev(1);    p.z = mean(2)-sqrt(eigen_value(e))*ev(2);
-        marker2.points.push_back(p);
-        marker2.id = marker_id;
-        markerarr.markers.push_back(marker2);
-        marker_id++;
-    }
-}
 
 void getCornerProbabilityDistributions(pcl::PointCloud<PointType>::Ptr cornerTemp)
 {
@@ -323,67 +275,88 @@ void updateMap()
 {
     std::vector<int> MapSearchInd;
     std::vector<float> MapSearchSqDis;
-    if (laserCloudCornerPDMap->points.size() > 0)
+    if (laserCloudCornerPDUpdateMap->points.size() > 0)
     {
-        kdtreeCornerMap->setInputCloud(laserCloudCornerPDMap);
+        kdtreeCornerMap->setInputCloud(laserCloudCornerPDUpdateMap);
         for(size_t c = 0; c < laserCloudCornerLastPD->points.size(); c++)
         {
              kdtreeCornerMap->nearestKSearch(laserCloudCornerLastPD->points[c], 1, MapSearchInd, MapSearchSqDis);
              Eigen::Vector3d diff_mean;
-             diff_mean(0) = laserCloudCornerLastPD->points[c].x - laserCloudCornerPDMap->points[MapSearchInd[0]].x;
-             diff_mean(1) = laserCloudCornerLastPD->points[c].y - laserCloudCornerPDMap->points[MapSearchInd[0]].y;
-             diff_mean(2) = laserCloudCornerLastPD->points[c].z - laserCloudCornerPDMap->points[MapSearchInd[0]].z;
-             Eigen::Matrix3d mapCov = cornerMapCov[MapSearchInd[0]];
+             diff_mean(0) = laserCloudCornerLastPD->points[c].x - laserCloudCornerPDUpdateMap->points[MapSearchInd[0]].x;
+             diff_mean(1) = laserCloudCornerLastPD->points[c].y - laserCloudCornerPDUpdateMap->points[MapSearchInd[0]].y;
+             diff_mean(2) = laserCloudCornerLastPD->points[c].z - laserCloudCornerPDUpdateMap->points[MapSearchInd[0]].z;
+             Eigen::Matrix3d mapCov = cornerMapUpdateCov[MapSearchInd[0]];
              double maha_dist = sqrt(diff_mean.transpose() * mapCov.inverse() * diff_mean);
-             if (MapSearchSqDis[0] > matchingThres && maha_dist > 5)
+             if (MapSearchSqDis[0] > matchingThres && maha_dist > 12)
              {
-                laserCloudCornerPDMap->points.push_back(laserCloudCornerLastPD->points[c]);
-                cornerMapCov.push_back(cornerCov[c]);
+                laserCloudCornerPDUpdateMap->points.push_back(laserCloudCornerLastPD->points[c]);
+                cornerMapUpdateCov.push_back(cornerCov[c]);
             }
         }
     }
     else
     {
-        *laserCloudCornerPDMap = *laserCloudCornerLastPD;
-        cornerMapCov = cornerCov;
+        *laserCloudCornerPDUpdateMap = *laserCloudCornerLastPD;
+        cornerMapUpdateCov = cornerCov;
     }
     //erase old corner PD map
-    while(laserCloudCornerPDMap->points.size() > 1000)
+    while(laserCloudCornerPDUpdateMap->points.size() > 500)
     {
-        laserCloudCornerPDMap->points.erase(laserCloudCornerPDMap->points.begin());
-        cornerMapCov.erase(cornerMapCov.begin());
+        laserCloudCornerPDUpdateMap->points.erase(laserCloudCornerPDUpdateMap->points.begin());
+        cornerMapUpdateCov.erase(cornerMapUpdateCov.begin());
     }
 
-    if (laserCloudSurfPDMap->points.size() > 0)
+    if (laserCloudSurfPDUpdateMap->points.size() > 0)
     {
-        kdtreeSurfMap->setInputCloud(laserCloudSurfPDMap);
+        kdtreeSurfMap->setInputCloud(laserCloudSurfPDUpdateMap);
         for(size_t c = 0; c < laserCloudSurfLastPD->points.size(); c++)
         {
             kdtreeSurfMap->nearestKSearch(laserCloudSurfLastPD->points[c], 1, MapSearchInd, MapSearchSqDis);
             Eigen::Vector3d diff_mean;
-            diff_mean(0) = laserCloudSurfLastPD->points[c].x - laserCloudSurfPDMap->points[MapSearchInd[0]].x;
-            diff_mean(1) = laserCloudSurfLastPD->points[c].y - laserCloudSurfPDMap->points[MapSearchInd[0]].y;
-            diff_mean(2) = laserCloudSurfLastPD->points[c].z - laserCloudSurfPDMap->points[MapSearchInd[0]].z;
-            Eigen::Matrix3d mapCov = surfMapCov[MapSearchInd[0]];
+            diff_mean(0) = laserCloudSurfLastPD->points[c].x - laserCloudSurfPDUpdateMap->points[MapSearchInd[0]].x;
+            diff_mean(1) = laserCloudSurfLastPD->points[c].y - laserCloudSurfPDUpdateMap->points[MapSearchInd[0]].y;
+            diff_mean(2) = laserCloudSurfLastPD->points[c].z - laserCloudSurfPDUpdateMap->points[MapSearchInd[0]].z;
+            Eigen::Matrix3d mapCov = surfMapUpdateCov[MapSearchInd[0]];
             double maha_dist = diff_mean.transpose() * mapCov.inverse() * diff_mean;
-            if (MapSearchSqDis[0] > matchingThres && maha_dist > 3)
+            if (MapSearchSqDis[0] > matchingThres && maha_dist > 12)
             {
-                laserCloudSurfPDMap->points.push_back(laserCloudSurfLastPD->points[c]);
-                surfMapCov.push_back(surfCov[c]);
+                laserCloudSurfPDUpdateMap->points.push_back(laserCloudSurfLastPD->points[c]);
+                surfMapUpdateCov.push_back(surfCov[c]);
             }
         }
     }
     else
     {
-        *laserCloudSurfPDMap = *laserCloudSurfLastPD;
-        surfMapCov = surfCov;
+        *laserCloudSurfPDUpdateMap = *laserCloudSurfLastPD;
+        surfMapUpdateCov = surfCov;
     }
     //erase old surf PD map
-    while(laserCloudSurfPDMap->points.size() > 30000)
+    while(laserCloudSurfPDUpdateMap->points.size() > 5000)
     {
-        laserCloudSurfPDMap->points.erase(laserCloudSurfPDMap->points.begin());
-        surfMapCov.erase(surfMapCov.begin());
+        laserCloudSurfPDUpdateMap->points.erase(laserCloudSurfPDUpdateMap->points.begin());
+        surfMapUpdateCov.erase(surfMapUpdateCov.begin());
     }
+
+    laserCloudCornerPDMap->clear();
+    cornerMapCov.clear();
+    laserCloudSurfPDMap->clear();
+    surfMapCov.clear();
+
+    *laserCloudCornerPDMap = *laserCloudCornerPDUpdateMap;
+    cornerMapCov = cornerMapUpdateCov;
+    *laserCloudSurfPDMap = *laserCloudSurfPDUpdateMap;
+    surfMapCov = surfMapUpdateCov;
+    for (auto m = 0; m < laserCloudCornerPDInitMap->size(); m++)
+    {
+        laserCloudCornerPDMap->points.push_back(laserCloudCornerPDInitMap->points[m]);
+        cornerMapCov.push_back(cornerMapInitCov[m]);
+    }
+    for (auto m = 0; m < laserCloudSurfPDInitMap->size(); m++)
+    {
+        laserCloudSurfPDMap->points.push_back(laserCloudSurfPDInitMap->points[m]);
+        surfMapCov.push_back(surfMapInitCov[m]);
+    }
+    std::cout<<"init map size : "<<(surfMapInitCov.size()+cornerMapInitCov.size())<<", whole map size : "<<(surfMapCov.size()+cornerMapCov.size())<<std::endl;
 }
 
 // set initial guess
@@ -419,21 +392,6 @@ void gnssHandler(const pd_loam::gnssConstPtr &gnss)
     gnssBuf.push(gnss);
     mBuf.unlock();
 }
-
-void laserCloudCornerLastHandler(const sensor_msgs::PointCloud2ConstPtr &laserCloudCornerLast2)
-{
-    mBuf.lock();
-    cornerLastBuf.push(laserCloudCornerLast2);
-    mBuf.unlock();
-}
-
-void laserCloudSurfLastHandler(const sensor_msgs::PointCloud2ConstPtr &laserCloudSurfLast2)
-{
-    mBuf.lock();
-    surfLastBuf.push(laserCloudSurfLast2);
-    mBuf.unlock();
-}
-
 void laserCloudFullResHandler(const sensor_msgs::PointCloud2ConstPtr &laserCloudFullRes2)
 {
     mBuf.lock();
@@ -443,15 +401,8 @@ void laserCloudFullResHandler(const sensor_msgs::PointCloud2ConstPtr &laserCloud
 
 void laserCloudFeatureHandler(const sensor_msgs::PointCloud2ConstPtr &laserCloudFeature)
 {
-    laserCloudFeatureLocal->clear();
-    pcl::fromROSMsg(*laserCloudFeature, *laserCloudFeatureLocal);
-}
-
-//receive odomtry
-void laserOdometryHandler(const nav_msgs::Odometry::ConstPtr &laserOdometry)
-{
     mBuf.lock();
-    odometryBuf.push(laserOdometry);
+    featureBuf.push(laserCloudFeature);
     mBuf.unlock();
 }
 
@@ -459,27 +410,11 @@ void process()
 {
     while(1)
     {
-        while (!cornerLastBuf.empty() && !surfLastBuf.empty() &&
-            !fullResBuf.empty() && !odometryBuf.empty() && !gnssBuf.empty())
+        while (!featureBuf.empty() && !fullResBuf.empty() && !gnssBuf.empty())
         {
             mBuf.lock();
-            while (!odometryBuf.empty() && odometryBuf.front()->header.stamp.toSec() < cornerLastBuf.front()->header.stamp.toSec())
-                odometryBuf.pop();
-            if (odometryBuf.empty())
-            {
-                mBuf.unlock();
-                break;
-            }
 
-            while (!surfLastBuf.empty() && surfLastBuf.front()->header.stamp.toSec() < cornerLastBuf.front()->header.stamp.toSec())
-                surfLastBuf.pop();
-            if (surfLastBuf.empty())
-            {
-                mBuf.unlock();
-                break;
-            }
-
-            while (!fullResBuf.empty() && fullResBuf.front()->header.stamp.toSec() < cornerLastBuf.front()->header.stamp.toSec())
+            while (!fullResBuf.empty() && fullResBuf.front()->header.stamp.toSec() < featureBuf.front()->header.stamp.toSec())
                 fullResBuf.pop();
             if (fullResBuf.empty())
             {
@@ -487,7 +422,7 @@ void process()
                 break;
             }
 
-            while (!gnssBuf.empty() && gnssBuf.front()->header.stamp.toSec() < cornerLastBuf.front()->header.stamp.toSec())
+            while (!gnssBuf.empty() && gnssBuf.front()->header.stamp.toSec() < featureBuf.front()->header.stamp.toSec())
                 gnssBuf.pop();
             if (gnssBuf.empty())
             {
@@ -495,31 +430,38 @@ void process()
                 break;
             }
 
-            timeLaserCloudCornerLast = cornerLastBuf.front()->header.stamp.toSec();
-            timeLaserCloudSurfLast = surfLastBuf.front()->header.stamp.toSec();
+            timeLaserCloudFeature = featureBuf.front()->header.stamp.toSec();
             timeLaserCloudFullRes = fullResBuf.front()->header.stamp.toSec();
-            timeLaserOdometry = odometryBuf.front()->header.stamp.toSec();
             timeGNSS = gnssBuf.front()->header.stamp.toSec();
 
-            if (timeLaserCloudCornerLast != timeLaserOdometry ||
-                timeLaserCloudSurfLast != timeLaserOdometry ||
-                timeLaserCloudFullRes != timeLaserOdometry ||
-                timeGNSS != timeLaserOdometry)
+            if (timeLaserCloudFullRes != timeLaserCloudFeature ||
+                timeGNSS != timeLaserCloudFeature)
             {
-                //printf("time corner %f surf %f full %f odom %f \n", timeLaserCloudCornerLast, timeLaserCloudSurfLast, timeLaserCloudFullRes, timeLaserOdometry);
                 //printf("unsync messeage!");
                 mBuf.unlock();
                 break;
             }
 
+            pcl::PointCloud<PointType> ClusterPoints;
+            pcl::fromROSMsg(*featureBuf.front(), ClusterPoints);
 
             laserCloudCornerLast->clear();
-            pcl::fromROSMsg(*cornerLastBuf.front(), *laserCloudCornerLast);
-            cornerLastBuf.pop();
-
             laserCloudSurfLast->clear();
-            pcl::fromROSMsg(*surfLastBuf.front(), *laserCloudSurfLast);
-            surfLastBuf.pop();
+
+            for (size_t k = 0; k < ClusterPoints.size(); k++)
+            {
+                if (ClusterPoints[k]._PointXYZINormal::normal_z == 1)
+                {
+                    laserCloudCornerLast->push_back(ClusterPoints[k]);
+                }
+                else if (ClusterPoints[k]._PointXYZINormal::normal_z == 2)
+                {
+                    laserCloudSurfLast->push_back(ClusterPoints[k]);
+                }
+            }
+
+            pcl::fromROSMsg(*featureBuf.front(), *laserCloudFeatureLocal);
+            featureBuf.pop();
 
             laserCloudFullRes->clear();
             pcl::fromROSMsg(*fullResBuf.front(), *laserCloudFullRes);
@@ -542,14 +484,6 @@ void process()
             t_wodom_curr.y() = gnssMsg->y_vel * gnssMsg->dt;
             t_wodom_curr.z() = gnssMsg->z_vel * gnssMsg->dt;
 
-            odometryBuf.pop();
-
-            while(!cornerLastBuf.empty())
-            {
-                cornerLastBuf.pop();
-                //printf("drop lidar frame in mapping for real time performance \n");
-            }
-
             mBuf.unlock();
 
             TicToc t_whole;
@@ -564,7 +498,6 @@ void process()
             pcl::PointCloud<PointType>::Ptr laserCloudSurfStack(new pcl::PointCloud<PointType>());
             *laserCloudSurfStack = *laserCloudSurfLast;
             int laserCloudSurfStackNum = laserCloudSurfStack->points.size();
-
 
             laserCloudCornerFromMap->clear();
             laserCloudSurfFromMap->clear();
@@ -786,7 +719,7 @@ void process()
                         TicToc t_solver;
                         ceres::Solver::Options options;
                         options.linear_solver_type = ceres::DENSE_QR;
-                        options.max_num_iterations = 15;
+                        options.max_num_iterations = 5;
                         options.minimizer_progress_to_stdout = false;
                         options.check_gradients = false;
                         options.gradient_check_relative_precision = 1e-4;
@@ -808,7 +741,7 @@ void process()
 
             if (final_cost < 0.04)
             {
-                R.diagonal()<<pow(0.05,2),pow(0.05,2),pow(0.1,2),pow(deg2rad(0.2),2),pow(deg2rad(0.2),2),pow(deg2rad(0.2),2),
+                R.diagonal()<<pow(0.25,2),pow(0.25,2),pow(0.25,2),pow(deg2rad(0.5),2),pow(deg2rad(0.5),2),pow(deg2rad(0.5),2),
                         pow(deg2rad(gnssMsg->roll_std),2),pow(deg2rad(gnssMsg->pitch_std),2),pow(deg2rad(gnssMsg->azi_std),2);
 
                 Eigen::MatrixXd HPHTR(9,9);
@@ -828,32 +761,6 @@ void process()
                 P = (I - K*H)*P;
             }
 
-#if DEBUG_MODE_MAPPING == 1
-            for (size_t c = 0; c < cornerMapCov.size(); c++)
-            {
-                Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> saes(cornerMapCov[c]);
-                Eigen::Vector3d mean;
-                mean(0) = laserCloudCornerPDMap->points[c].x;
-                mean(1) = laserCloudCornerPDMap->points[c].y;
-                mean(2) = laserCloudCornerPDMap->points[c].z;
-                drawEigenVector(ros::Time().fromSec(timeLaserOdometry), 1, marker_id, mean, saes.eigenvectors(), saes.eigenvalues(), eig_marker);
-                marker_id = eig_marker.markers.back().id+1;
-            }
-
-            for (size_t s = 0; s < surfMapCov.size(); s++)
-            {
-                Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> saes(surfMapCov[s]);
-                Eigen::Vector3d mean;
-                mean(0) = laserCloudSurfPDMap->points[s].x;
-                mean(1) = laserCloudSurfPDMap->points[s].y;
-                mean(2) = laserCloudSurfPDMap->points[s].z;
-                drawEigenVector(ros::Time().fromSec(timeLaserOdometry), 2, marker_id, mean, saes.eigenvectors(), saes.eigenvalues(), eig_marker);
-                marker_id = eig_marker.markers.back().id+1;
-            }
-#endif
-
-
-
             double wholeProcessTime = t_whole.toc();
             ProcessTimeMean = ProcessTimeMean*FrameNum + wholeProcessTime;
             FrameNum++;
@@ -871,7 +778,7 @@ void process()
             nav_msgs::Odometry odomAftMapped;
             odomAftMapped.header.frame_id = "/body";
             odomAftMapped.child_frame_id = "/aft_mapped";
-            odomAftMapped.header.stamp = ros::Time().fromSec(timeLaserOdometry);
+            odomAftMapped.header.stamp = ros::Time().fromSec(timeLaserCloudFeature);
             odomAftMapped.pose.pose.orientation.x = q_w_curr.x();
             odomAftMapped.pose.pose.orientation.y = q_w_curr.y();
             odomAftMapped.pose.pose.orientation.z = q_w_curr.z();
@@ -897,7 +804,7 @@ void process()
             q_GNSS.setRPY(deg2rad(gnssMsg->roll), deg2rad(gnssMsg->pitch), deg2rad(gnssMsg->azimuth));
             geometry_msgs::PoseStamped gnssPose;
             gnssPose.header.frame_id = "/body";
-            gnssPose.header.stamp = ros::Time().fromSec(timeLaserOdometry);
+            gnssPose.header.stamp = ros::Time().fromSec(timeLaserCloudFeature);
             gnssPose.pose.position.x = gnssMsg->eastPos;
             gnssPose.pose.position.y = gnssMsg->northPos;
             gnssPose.pose.position.z = gnssMsg->upPos;
@@ -916,7 +823,7 @@ void process()
             q_KF.setRPY(state(3), state(4), state(5));
             geometry_msgs::PoseStamped KFPose;
             KFPose.header.frame_id = "/body";
-            KFPose.header.stamp = ros::Time().fromSec(timeLaserOdometry);
+            KFPose.header.stamp = ros::Time().fromSec(timeLaserCloudFeature);
             KFPose.pose.position.x = state(0);
             KFPose.pose.position.y = state(1);
             KFPose.pose.position.z = state(2);
@@ -932,7 +839,7 @@ void process()
             nav_msgs::Odometry odomKF;
             odomKF.header.frame_id = "/body";
             odomKF.child_frame_id = "/aft_KF";
-            odomKF.header.stamp = ros::Time().fromSec(timeLaserOdometry);
+            odomKF.header.stamp = ros::Time().fromSec(timeLaserCloudFeature);
             odomKF.pose.pose.orientation.x = q_KF.x();
             odomKF.pose.pose.orientation.y = q_KF.y();
             odomKF.pose.pose.orientation.z = q_KF.z();
@@ -955,14 +862,9 @@ void process()
             br.sendTransform(tf::StampedTransform(transform, odomAftMapped.header.stamp, "/body", "/aft_mapped"));
 
             transform_GNSS.setRotation(q_GNSS);
-            br.sendTransform(tf::StampedTransform(transform_GNSS, ros::Time().fromSec(timeLaserOdometry), "/body", "/GNSS_INS"));
+            br.sendTransform(tf::StampedTransform(transform_GNSS, ros::Time().fromSec(timeLaserCloudFeature), "/body", "/GNSS_INS"));
             transform_KF.setRotation(q_KF);
-            br.sendTransform(tf::StampedTransform(transform_KF, ros::Time().fromSec(timeLaserOdometry), "/body", "/KF"));
-#if DEBUG_MODE_MAPPING == 1
-            pubEigenMarker.publish(eig_marker);
-            eig_marker.markers.clear();
-            marker_id = 1;
-#endif
+            br.sendTransform(tf::StampedTransform(transform_KF, ros::Time().fromSec(timeLaserCloudFeature), "/body", "/KF"));
 
             transformUpdate();
 
@@ -993,11 +895,11 @@ void process()
 
             getSurfProbabilityDistributions(surfTemp);
 
-            updateMap();
+            //updateMap();
 
             sensor_msgs::PointCloud2 laserCloudFullRes3Local;
             pcl::toROSMsg(*laserCloudFullRes, laserCloudFullRes3Local);
-            laserCloudFullRes3Local.header.stamp = ros::Time().fromSec(timeLaserOdometry);
+            laserCloudFullRes3Local.header.stamp = ros::Time().fromSec(timeLaserCloudFeature);
             laserCloudFullRes3Local.header.frame_id = "/body";
             pubLaserCloudFullResLocal.publish(laserCloudFullRes3Local);
 
@@ -1009,7 +911,7 @@ void process()
 
             sensor_msgs::PointCloud2 laserCloudFullRes3;
             pcl::toROSMsg(*laserCloudFullRes, laserCloudFullRes3);
-            laserCloudFullRes3.header.stamp = ros::Time().fromSec(timeLaserOdometry);
+            laserCloudFullRes3.header.stamp = ros::Time().fromSec(timeLaserCloudFeature);
             laserCloudFullRes3.header.frame_id = "/body";
             pubLaserCloudFullRes.publish(laserCloudFullRes3);
 
@@ -1022,27 +924,9 @@ void process()
             }
             sensor_msgs::PointCloud2 laserCloudFeature2;
             pcl::toROSMsg(*laserCloudFeatureMap, laserCloudFeature2);
-            laserCloudFeature2.header.stamp = ros::Time().fromSec(timeLaserOdometry);
+            laserCloudFeature2.header.stamp = ros::Time().fromSec(timeLaserCloudFeature);
             laserCloudFeature2.header.frame_id = "/body";
             pubLaserCloudFeature.publish(laserCloudFeature2);
-
-            frameMsg.header.frame_id = "/body";
-            frameMsg.header.stamp = ros::Time().fromSec(timeLaserOdometry);
-            frameMsg.fullPC = laserCloudFullRes3Local;
-            sensor_msgs::PointCloud2 laserCornerMsg;
-            pcl::toROSMsg(*laserCloudCornerLast, laserCornerMsg);
-            laserCornerMsg.header.stamp = ros::Time().fromSec(timeLaserOdometry);
-            laserCornerMsg.header.frame_id = "/body";
-            frameMsg.CornerPC = laserCornerMsg;
-            sensor_msgs::PointCloud2 laserSurfMsg;
-            pcl::toROSMsg(*laserCloudSurfLast, laserSurfMsg);
-            laserSurfMsg.header.stamp = ros::Time().fromSec(timeLaserOdometry);
-            laserSurfMsg.header.frame_id = "/body";
-            frameMsg.SurfPC = laserSurfMsg;
-            frameMsg.pose = odomKF;
-            frameMsg.GNSS = *gnssMsg;
-            frameMsg.frame_idx = frameCount;
-            pubFrame.publish(frameMsg);
 
             mMapping.unlock();
             frameCount++;
@@ -1054,7 +938,7 @@ void process()
 
 int main(int argc, char **argv)
 {
-    ros::init(argc, argv, "laserMapping");
+    ros::init(argc, argv, "laserLocalization");
     ros::NodeHandle nh;
 
     P.diagonal()<<100,100,100,100,100,100;
@@ -1064,14 +948,56 @@ int main(int argc, char **argv)
     state.setZero();
     nh.param<float>("map_matching_range", mapMatchingRange, 80);
     nh.param<double>("matching_threshold",matchingThres, 4);
+    nh.param<std::string>("map_directory", map_directory, "/");
+    std::string mapPath = map_directory + "pdMap.txt";
+    readFile.open(mapPath);
+    std::string line;
+    if(readFile.is_open())
+    {
+        while(std::getline(readFile, line))
+        {
+            std::stringstream sstream(line);
+            std::string word;
+            std::vector<double> MapData;
+            while(getline(sstream, word, ' '))
+            {
+                MapData.push_back(std::stod(word));
+            }
+            int map_type = MapData[0];
+            PointType p;
+            p.x = MapData[1];
+            p.y = MapData[2];
+            p.z = MapData[3];
+            Eigen::Matrix3d cov;
+            cov(0,0) = MapData[4];  cov(0,1) = MapData[5];  cov(0,2) = MapData[6];
+            cov(1,0) = cov(0,1);    cov(1,1) = MapData[7];  cov(1,2) = MapData[8];
+            cov(2,0) = cov(0,2);    cov(2,1) = cov(1,2);  cov(2,2) = MapData[9];
 
-    ros::Subscriber subLaserCloudCornerLast = nh.subscribe<sensor_msgs::PointCloud2>("/odometry/laser_cloud_corner_last", 100, laserCloudCornerLastHandler);
+            if (map_type == 1)
+            {
+                laserCloudCornerPDInitMap->points.push_back(p);
+                cornerMapInitCov.push_back(cov);
+            }
+            else if (map_type == 2)
+            {
+                laserCloudSurfPDInitMap->points.push_back(p);
+                surfMapInitCov.push_back(cov);
+            }
+        }
+        readFile.close();
 
-    ros::Subscriber subLaserCloudSurfLast = nh.subscribe<sensor_msgs::PointCloud2>("/odometry/laser_cloud_surf_last", 100, laserCloudSurfLastHandler);
-
-    ros::Subscriber subLaserOdometry = nh.subscribe<nav_msgs::Odometry>("/odometry/laser_odom_to_init", 100, laserOdometryHandler);
-
-    ros::Subscriber subLaserCloudFullRes = nh.subscribe<sensor_msgs::PointCloud2>("/velodyne_cloud_3", 100, laserCloudFullResHandler);
+        *laserCloudCornerPDMap = *laserCloudCornerPDInitMap;
+        cornerMapCov = cornerMapInitCov;
+        *laserCloudSurfPDMap = *laserCloudSurfPDInitMap;
+        surfMapCov = surfMapInitCov;
+        ROS_INFO("Map file loaded. PD size : %ld", (cornerMapInitCov.size()+surfMapInitCov.size()));
+    }
+    else
+    {
+        ROS_ERROR("Unable to open map file");
+        return 0;
+    }
+    ros::Subscriber subLaserCloudFullRes = nh.subscribe<sensor_msgs::PointCloud2>("/velodyne_cloud_2", 100, laserCloudFullResHandler);
 
     ros::Subscriber subLaserCloudFeature = nh.subscribe<sensor_msgs::PointCloud2>("/feature/laser_feature_cluster_points", 100, laserCloudFeatureHandler);
 
@@ -1090,10 +1016,6 @@ int main(int argc, char **argv)
     pubGnssPath = nh.advertise<nav_msgs::Path>("/mapping/GNSS_INS_path", 100);
 
     pubKalmanPath = nh.advertise<nav_msgs::Path>("/mapping/KF_path", 100);
-
-    pubEigenMarker = nh.advertise<visualization_msgs::MarkerArray>("/map_eigen", 100);
-
-    pubFrame = nh.advertise<pd_loam::frame>("/mapping/frame", 100);
 
     pubProcessTime = nh.advertise<std_msgs::Float32>("/mapping_process_time", 100);
 
